@@ -41,7 +41,8 @@ enum {
 enum {
     FL_IMMEDIATE  = (1<<0),
     FL_COMPONLY   = (1<<1),
-    FL_PREDEFINED = (1<<2),
+    FL_INTERONLY  = (1<<2),
+    FL_PREDEFINED = (1<<3),
 };
 
 #define SYSWORD(s,fl) (Word){FL_PREDEFINED|(fl),0,.sw=(s)}
@@ -56,6 +57,7 @@ Thing *compstackptr = compstack;
 
 // Topmost element
 Cell *stackptr = stack;
+char *comptarget = NULL;
 
 #define DICT_SIZE 128 
 typedef struct { char *name; Word w; } DictEntry;
@@ -67,13 +69,22 @@ char *pointer = NULL;
 // 0 = interpreting
 // 1 = compiling
 char state = 0;
+// Relative jump for branch and 0branch
+// NOTE: absolute jump might be implemented later if needed.
+// NOTE(2): this is basically timetravel
+int64_t reljump = 0;
 
-//TODO: execution trace for branching back
-//Use Thing*
+int error_happened = 0;
+// Error reporitng
+#define error(cs, ...){\
+    error_happened = 1;\
+    fprintf(stderr, "\033[m\033[1mAt %lu: ", pointer-expression);\
+    fprintf(stderr, cs, ##__VA_ARGS__); \
+    fprintf(stderr, "\033[m");}\
 
 // Report insufficient arguments
 void ins_arguments(size_t req, size_t got) {
-    printf("EXPECTED %lu GOT %lu\n", req, got);
+    error( "Expected %lu got %lu\n", req, got);
 }
 
 // Ask to have NUM arguments on stack
@@ -91,7 +102,7 @@ int askspace(size_t num) {
     const size_t leftover = STACK_SIZE - current_size;
 
     if (leftover < num) {
-        printf("Error: stack overflow\n");
+        error( "Error: stack overflow\n");
         return 1;
     }
 
@@ -100,9 +111,32 @@ int askspace(size_t num) {
 
 /* Begin predefined words *******/
 void bye_w() {
-    printf("--BYE-----------------------------------\n");
+    //printf("--BYE-----------------------------------\n");
     exit(0);
 }
+
+// N -- 
+void branch_w() {
+    if (askstack(1)) return;
+
+    Cell n = *stackptr--;
+
+    reljump = n.i;
+}
+
+// COND N --
+// Branches when COND == 0
+void zbranch_w() {
+    if (askstack(1)) return;
+
+    Cell n    = *stackptr--;
+    Cell cond = *stackptr--;
+
+    if(cond.i) return;
+
+    reljump = n.i;
+}
+
 void putint_w() {
     if (askstack(1)) return;
     printf("%ld", stackptr--->i);
@@ -123,9 +157,45 @@ void words_w() {
     printf("(total %lu/%lu)\n", dictptr-dict, DICT_SIZE);
 }
 
+// Adds entry if not present
+void dict_entry(char *entry) {
+    assert(entry != NULL);
+
+    for (DictEntry *p = dict; p < dictptr; p++) {
+        // Already present
+        if (!strcmp(p->name, entry)) return;
+    }
+
+    // Add entry
+    dictptr++->name = entry;
+}
+
+// Sets word at entry
+void dict_setat(char *entry, Word w) {
+    if (entry == NULL) {
+        error("dict_setat: entry is null!\n");
+        exit(1);
+    }
+
+    for (DictEntry *p = dict; p < dictptr; p++) {
+        if (!strcmp(p->name, entry)) {
+            p->w = w;
+            return;
+        }
+    }
+
+    error("dict_setat: dict entry '%s' doesn't exist!\n", entry);
+    exit(1);
+}
+
 char *parse();
 void colon_w() {
     char *name = parse();
+
+    if (name == NULL) {
+        error( "Error: No word provided for ':'\n");
+        return;
+    }
 
     // Capitalize
     for (char *np = name; *np; ++np) {
@@ -133,8 +203,11 @@ void colon_w() {
     }
 
     // Copy name
-    dictptr->name = malloc(strlen(name) + 1);
-    strcpy(dictptr->name, name);
+    char *dictname = malloc(strlen(name) + 1);
+    strcpy(dictname, name);
+
+    dict_entry(dictname);
+    comptarget = dictname;
 
     // Enter compile mode
     state = 1;
@@ -152,9 +225,10 @@ void scolon_w() {
     compstackptr = compstack;
 
     // Finish the word declaration
-    dictptr->w = (Word){0,sz,.body=definition};
+    Word w = (Word){0,sz,.body=definition};
 
-    dictptr++;
+    dict_setat(comptarget, w);
+    comptarget = NULL;
 
     // Back into interpretation mode
     state = 0;
@@ -168,6 +242,11 @@ void immediate_w() {
 // Adds FL_COMPONLY to the currently compiled word
 void compile_only_w() {
     dictptr->w.flags = FL_COMPONLY;
+}
+
+// Adds FL_INTERONLY to the currently compiled word
+void runtime_only_w() {
+    dictptr->w.flags = FL_INTERONLY;
 }
 
 // A B -- B A
@@ -268,16 +347,16 @@ void not_w(void) {
 /* End predefined words ********/
 // Prompt
 void ok(size_t line_sz) {
-    const size_t stack_sz = (stackptr-stack);
-
-    // Print stack size
-    if (stack_sz) {
-        printf("\033[A\033[%dGok %lu\n", line_sz+1, stack_sz);
+    if(error_happened) {
+        error_happened = 0;
         return;
     }
+    const size_t stack_sz = (stackptr-stack);
 
-    // Just ok
-    printf("\033[A\033[%dGok\n", line_sz+1);
+    if (stack_sz)
+        printf("\033[1mok %lu\033[m\n", stack_sz);
+    else
+        printf("\033[1mok\033[m\n");
 }
 
 char *parse() {
@@ -340,9 +419,14 @@ char identify(char* word) {
 
 // Compilation
 void compile(Word *w) {
+    // Check that the word can be compiled
+    if (w->flags & FL_INTERONLY) {
+        error("Word is runtime-only!\n");
+        return;
+    }
     // Check overflow
     if ((compstackptr-compstack) >= COMPSTACK_SIZE) {
-        fprintf(stderr, "Compilation stack overflow -- word is too long!\n");
+        error( "Compilation stack overflow -- word is too long!\n");
         exit(1);
     }
     // Append the word
@@ -364,9 +448,22 @@ void compile_number(char *word, char numericity) {
     *compstackptr++ = (Thing){TH_CELL,.c=num};
 }
 
+int jump() {
+    // Skip word
+    if (reljump > 0) {
+        reljump--;
+        return 1;
+    }
+
+    return 0;
+}
+
 // Execute a thing from a userword
 void execute(Word *w);
 void execute_thing(Thing th) {
+
+    if (jump()) return;
+
     if (th.type & TH_CELL) {
         // Ensure that there is no stack overflow
         if (askspace(1)) exit(1);
@@ -391,12 +488,6 @@ void execute_thing(Thing th) {
 void execute(Word *w) {
     assert(w != NULL);
 
-    // Should not be executed
-    if (w->flags & FL_COMPONLY) {
-        fprintf(stderr, "WORD IS COMPILE-ONLY AT %lu\n", pointer-expression);
-        return;
-    }
-    
     // Predefined words
     if (w->flags & FL_PREDEFINED) {
         w->sw();
@@ -404,7 +495,22 @@ void execute(Word *w) {
     }
 
     // User words
-    for (size_t i = 0; i < w->size; i++) {
+    for (size_t i = 0; i < w->size || reljump < 0; i++) {
+        // Backtracking
+        if (reljump < 0) {
+            // For convenience
+            reljump--;
+
+            if (-reljump > i) {
+                error("Cannot backtrack %ld words: too far back\n", reljump+1);
+                reljump = 0;
+                break;
+            } 
+
+            i += reljump;
+            reljump = 0;
+        }
+
         execute_thing(w->body[i]);
     }
 }
@@ -412,6 +518,7 @@ void execute(Word *w) {
 
 void push_number(char *word, char numericity) {
     assert(numericity);
+
     if (askspace(1)) exit(1);
 
     if (numericity == 1)
@@ -432,8 +539,44 @@ Word *find_word(char *word) {
         if(!strcmp(p->name, word)) return &(p->w);
     }
     
-    fprintf(stderr, "'%s'?\n", word);
+    error("'%s'?\n", word);
     return NULL;
+}
+
+// Types of words:
+// normal
+// immediate
+// compile-only
+// runtime-only
+// immediate, compile-only
+// immediate, runtime-only (doesn't really exist)
+// runtime-only, compile-only (invalid)
+int flagcheck(Word *w) {
+    // Invalid word
+    if (w->flags & FL_INTERONLY & FL_COMPONLY) {
+        error("Word is both compile-only and runtime-only\n");
+        return 1;
+    }
+            
+    // Compiling
+    if (state) {
+        // Runtime-only
+        if (w->flags & FL_INTERONLY) {
+            error("Compiling runtime-only word\n");
+            return 1;
+        }
+        return 0;
+    }
+
+    // Executing
+
+    // Should not be executed
+    if (w->flags & FL_COMPONLY) {
+        error("Executing a compile-only word\n");
+        return 1;
+    }
+
+    return 0;
 }
 
 void eval() {
@@ -443,6 +586,10 @@ void eval() {
        if (word == NULL) break;
        if (*word == 0) break;
 
+       //TODO: split into runtime() and compiletime() as follows.
+       //if (state) runtime(word);
+       //else compiletime(word);
+       
        // Identify type
        char numericity = identify(word);
 
@@ -458,6 +605,8 @@ void eval() {
        // Could not find the word
        if (w == NULL) return;
 
+       if (flagcheck(w)) continue;
+
        if (state && !(w->flags & FL_IMMEDIATE)) compile(w);
        else execute(w);
    }
@@ -468,9 +617,12 @@ void eval() {
 void init_dict() {
     /* Basics */
     *dictptr++ = (DictEntry){"BYE", SYSWORD(bye_w,0)};
-    *dictptr++ = (DictEntry){":", SYSWORD(colon_w,FL_IMMEDIATE)};
-    *dictptr++ = (DictEntry){";", SYSWORD(scolon_w,FL_IMMEDIATE)};
+    *dictptr++ = (DictEntry){"BRANCH", SYSWORD(branch_w,FL_COMPONLY)};
+    *dictptr++ = (DictEntry){"0BRANCH", SYSWORD(zbranch_w,FL_COMPONLY)};
+    *dictptr++ = (DictEntry){":", SYSWORD(colon_w,FL_IMMEDIATE|FL_INTERONLY)};
+    *dictptr++ = (DictEntry){";", SYSWORD(scolon_w,FL_IMMEDIATE|FL_COMPONLY)};
     *dictptr++ = (DictEntry){"IMMEDIATE", SYSWORD(immediate_w,FL_IMMEDIATE|FL_COMPONLY)};
+    *dictptr++ = (DictEntry){"RUNTIME-ONLY", SYSWORD(runtime_only_w,FL_IMMEDIATE|FL_COMPONLY)};
     *dictptr++ = (DictEntry){"COMPILE-ONLY", SYSWORD(compile_only_w,FL_IMMEDIATE|FL_COMPONLY)};
 
     /* Development */
@@ -518,7 +670,9 @@ void repl() {
    // Loop
    while (1) {
        // Read
+       printf("\033[3m");
        getline(&line, &line_sz, stdin);
+       printf("\033[m");
        if (feof(stdin)) {
            free(line);
            exit(0);
@@ -528,6 +682,8 @@ void repl() {
            free(line);
            exit(1);
        }
+
+       //line_sz = strlen(line);
 
 
        // Eval
