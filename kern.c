@@ -5,30 +5,22 @@
 #include <ctype.h>
 #include <stdint.h>
 
+typedef void (*SysWord)(void);
+typedef struct Word Word;
 typedef union {
-    char c;
     int64_t i;
     uint64_t u;
     double f;
     void *p;
+    Word *w;
 } Cell;
-typedef void (*SysWord)(void);
-typedef struct Word Word;
-typedef struct Thing Thing;
-
-struct Thing {
-   char type; 
-   union {
-        Cell c;
-        Word *w;
-   };
-};
 
 struct Word {
     char flags;
     size_t size;
+    //char signature;
     union {
-        Thing *body;
+        Cell *body;
         SysWord sw;
     };
 };
@@ -47,32 +39,43 @@ enum {
 
 #define SYSWORD(s,fl) (Word){FL_PREDEFINED|(fl),0,.sw=(s)}
 
+// Let's hope the system won't give us that address when we malloc() and that
+// NULL != LIT_PTR
+// TODO: make it 100% safe
+#define LIT_PTR (SysWord)0x100
+Word *lit_word = NULL;
+
 #define STACK_SIZE 128
-#define COMPSTACK_SIZE 256
-Cell stack[STACK_SIZE];
-// Compilation stack
-// This means that the word size <= COMPSTACK_SIZE
-Thing compstack[COMPSTACK_SIZE] = {0};
-Thing *compstackptr = compstack;
+// Stack && topmost element
+Cell stack[STACK_SIZE], *stackptr = stack;
 
-// Topmost element
-Cell *stackptr = stack;
 char *comptarget = NULL;
+size_t comptarget_sz = 0;
 
+// Dictionary entries point to the wordspace areas
 #define DICT_SIZE 128 
 typedef struct { char *name; Word w; } DictEntry;
-DictEntry dict[DICT_SIZE] = {0}, *dictptr = dict;
+DictEntry dict[DICT_SIZE] = {0}, *dictptr = dict, *userwords = dict;
 
 
+// Memory space for words. Nonreleasable allocation for user data is allowed
+// too.
+// TODO: malloc it
+#define WSPACE_SIZE sizeof(Word)*512
+char wordspace[WSPACE_SIZE] = {0}, *wspaceptr = wordspace;
+
+
+// Expression that is processed at the moment
 char *expression = NULL;
 char *pointer = NULL;
+
 // 0 = interpreting
 // 1 = compiling
 char state = 0;
-// Relative jump for branch and 0branch
-// NOTE: absolute jump might be implemented later if needed.
+// Absolute jump for branch and 0branch
 // NOTE(2): this is basically timetravel
-int64_t reljump = 0;
+int need_jump = 0;
+Cell *absjump = 0;
 
 int error_happened = 0;
 // Error reporitng
@@ -83,18 +86,20 @@ int error_happened = 0;
     fprintf(stderr, "\033[m");}\
 
 // Report insufficient arguments
-void ins_arguments(size_t req, size_t got) {
-    error( "Expected %lu got %lu\n", req, got);
+void ins_arguments(const char *who, size_t req, size_t got) {
+    error("In %s: expected %lu got %lu\n", who, req, got);
 }
 
 // Ask to have NUM arguments on stack
-int askstack(size_t num) {
-    if ((stackptr-stack) < num) {
-        ins_arguments(num, (stackptr-stack));
+int askstack(const char *who, size_t num) {
+    if ((size_t)(stackptr-stack) < num) {
+        ins_arguments(who, num, (stackptr-stack));
         return 1;
     }
     return 0;
 }
+
+#define ASKSTACK(num) askstack(__func__, num)
 
 // Ask to have NUM space left on stack arguments on stack
 int askspace(size_t num) {
@@ -102,7 +107,7 @@ int askspace(size_t num) {
     const size_t leftover = STACK_SIZE - current_size;
 
     if (leftover < num) {
-        error( "Error: stack overflow\n");
+        error("Error: stack overflow\n");
         return 1;
     }
 
@@ -110,44 +115,181 @@ int askspace(size_t num) {
 }
 
 /* Begin predefined words *******/
+
+// Note: also called from main()
 void bye_w() {
-    //printf("--BYE-----------------------------------\n");
+    for (DictEntry *p = userwords; p < dictptr; p++) {
+        free(p->name);
+    }
     exit(0);
 }
 
 // N -- 
 void branch_w() {
-    if (askstack(1)) return;
+    if (ASKSTACK(1)) return;
 
     Cell n = *stackptr--;
 
-    reljump = n.i;
+    need_jump = 1;
+    absjump = (Cell*)n.p;
 }
 
 // COND N --
 // Branches when COND == 0
 void zbranch_w() {
-    if (askstack(1)) return;
+    if (ASKSTACK(1)) return;
 
     Cell n    = *stackptr--;
     Cell cond = *stackptr--;
 
     if(cond.i) return;
 
-    reljump = n.i;
+    need_jump = 1;
+    absjump = (Cell*)n.p;
+}
+
+// Wrapper for find_word()
+char *parse(void);
+Word *find_word(char*);
+void findword_w() {
+    if(askspace(1)) return;
+
+    char *word = parse();
+
+    if (word == NULL || !*word) {
+        error("No name provided for FINDWORD\n");
+        return;
+    }
+
+    Word *w = NULL;
+
+    //NOTE: copied the entirety of find_word() to here because we don't want the
+    //error message to pop up here. TODO: Is this needed?
+    // Uppercase
+    for (char *p = word; *p; ++p) *p = toupper(*p);
+
+    // Search
+    for(DictEntry *p = dict; p < dictptr; ++p) {
+        if(!strcmp(p->name, word)) { 
+            w = &(p->w);
+            break;
+        }
+    }
+
+    (++stackptr)->p = (void*)w;
+}
+
+char *parse(void);
+Word *find_word(char*);
+void postpone_w() {
+    if(askspace(1)) return;
+
+    char *word = parse();
+
+    if (word == NULL || !*word) {
+        error("No name provided for FINDWORD\n");
+        return;
+    }
+
+    Word *w = find_word(word);
+    if (w == NULL) {
+        error("Cannot postpone '%s': doesn't exist!\n", word);
+        return;
+    }
+
+    // Compile the word
+    //*(Cell*)wspaceptr = (Cell){TH_WORD,.w=w};
+    *(Cell*)wspaceptr = (Cell){.w=w};
+    wspaceptr += sizeof(Cell);
+}
+
+// Pushes pointer to the topmost wspace element
+void here_w() {
+    if (askspace(1)) return;
+    
+    (++stackptr)->p = (void*)wspaceptr;
+}
+
+// Reads one byte
+void bfetch_w() {
+    if (ASKSTACK(1)) return;
+    if (askspace(1)) return;
+
+    char *ptr = (char*)stackptr--->p;
+    
+    (++stackptr)->i = *ptr;
+}
+
+// Writes one byte
+void bwr_w() {
+    if (ASKSTACK(2)) return;
+
+    char *addr = stackptr--->p;
+    char byte = (char)stackptr--->i;
+    
+    *addr = byte;
+}
+
+// Reads one cell
+void fetch_w() {
+    if (ASKSTACK(1)) return;
+    if (askspace(1)) return;
+
+    Cell *ptr = (Cell*)stackptr--->p;
+    
+    *++stackptr = *ptr;
+}
+
+// Writes one cell
+void wr_w() {
+    if (ASKSTACK(2)) return;
+
+    Cell *addr = stackptr--->p;
+    Cell c = *stackptr--;
+    
+    *addr = c;
+}
+
+// Reserves n bytes in wordspace
+// Strictly allocates, doesn't deallocate
+void reserve_w() {
+    if (ASKSTACK(1)) return;
+    
+    size_t bytes = stackptr--->u; 
+
+    wspaceptr += bytes;
+}
+
+// Pushes the amount of bytes occupied by N cells
+// N -- B
+void cells_w() {
+    if (ASKSTACK(1)) return;
+
+    size_t cells = stackptr--->u; 
+
+    (++stackptr)->u = cells*sizeof(Cell);
 }
 
 void putint_w() {
-    if (askstack(1)) return;
+    if (ASKSTACK(1)) return;
     printf("%ld", stackptr--->i);
 }
 void putflt_w() {
-    if(askstack(1)) return;
+    if(ASKSTACK(1)) return;
     printf("%f", stackptr--->f);
 }
 void emit_w() {
-    if(askstack(1)) return;
-    putchar(stackptr--->c);
+    if(ASKSTACK(1)) return;
+    putchar(stackptr--->i);
+}
+
+void exprbyte_w() {
+    if(askspace(1)) return;
+
+    (++stackptr)->i = *pointer;
+    
+    // Advance pointer if not EOL
+    if(*pointer) pointer++;
 }
 
 void words_w() {
@@ -156,6 +298,38 @@ void words_w() {
     }
     printf("(total %lu/%lu)\n", dictptr-dict, DICT_SIZE);
 }
+
+char *parse();
+Word *find_word(char*);
+void flags_w() {
+    char *word = parse();
+
+    if (word == NULL || !*word) {
+        error("No word provided for FLAGS\n");
+        return;
+    }
+
+    Word *w = find_word(word);
+
+    if (!w->flags) {
+        printf("'%s' = 0 --> no flags\n", word);
+        return;
+    }
+
+    printf("'%s' = %lu:\n", word, w->flags);
+
+    if (w->flags & FL_PREDEFINED)
+        printf("PREDEFINED\n");
+    if (w->flags & FL_IMMEDIATE)
+        printf("IMMEDIATE\n");
+    if (w->flags & FL_COMPONLY)
+        printf("COMPILE-TIME ONLY\n");
+    if (w->flags & FL_INTERONLY)
+        printf("RUNTIME-ONLY\n");
+}
+
+//Word *newword() {
+//}
 
 // Adds entry if not present
 void dict_entry(char *entry) {
@@ -166,26 +340,26 @@ void dict_entry(char *entry) {
         if (!strcmp(p->name, entry)) return;
     }
 
+
     // Add entry
-    dictptr++->name = entry;
+    // NOTE: abandons previous word declaration, which leaks memory. However, we
+    // don't redefine words often, hopefully...
+    dictptr->name = entry;
+    dictptr->w.body = (Cell*)wspaceptr;
+    dictptr++;
 }
 
-// Sets word at entry
-void dict_setat(char *entry, Word w) {
-    if (entry == NULL) {
-        error("dict_setat: entry is null!\n");
-        exit(1);
+Word *find_word(char *word) {
+    // (convert to uppercase)
+    for (char *p = word; *p; ++p) *p = toupper(*p);
+    // Search dictionary entries
+    for(DictEntry *p = dict; p < dictptr; ++p) {
+        //printf("%s =? %s\n", word, p->name);
+        if(!strcmp(p->name, word)) return &(p->w);
     }
-
-    for (DictEntry *p = dict; p < dictptr; p++) {
-        if (!strcmp(p->name, entry)) {
-            p->w = w;
-            return;
-        }
-    }
-
-    error("dict_setat: dict entry '%s' doesn't exist!\n", entry);
-    exit(1);
+    
+    error("'%s'?\n", word);
+    return NULL;
 }
 
 char *parse();
@@ -214,44 +388,38 @@ void colon_w() {
 }
 
 void scolon_w() {
-    const size_t sz = compstackptr-compstack;
-    // Allocate
-    Thing *definition = malloc(sz*sizeof(Thing));
-
-    // Copy
-    memcpy(definition, compstack, sz*sizeof(Thing));
-
-    // Reset
-    compstackptr = compstack;
-
     // Finish the word declaration
-    Word w = (Word){0,sz,.body=definition};
+    // NOTE: careful! potential write at NULL
+    find_word(comptarget)->size = comptarget_sz;
+    wspaceptr++;
 
-    dict_setat(comptarget, w);
     comptarget = NULL;
+    comptarget_sz = 0;
 
     // Back into interpretation mode
     state = 0;
 }
 
+//TODO: these flag-words should be put AFTER the word,
+//not inside of it
 // Adds FL_IMMEDIATE to the currently compiled word
 void immediate_w() {
-    dictptr->w.flags = FL_IMMEDIATE;
+    find_word(comptarget)->flags |= FL_IMMEDIATE;
 }
 
 // Adds FL_COMPONLY to the currently compiled word
 void compile_only_w() {
-    dictptr->w.flags = FL_COMPONLY;
+    find_word(comptarget)->flags |= FL_COMPONLY;
 }
 
 // Adds FL_INTERONLY to the currently compiled word
 void runtime_only_w() {
-    dictptr->w.flags = FL_INTERONLY;
+    find_word(comptarget)->flags |= FL_INTERONLY;
 }
 
 // A B -- B A
 void swap_w(void) {
-    if(askstack(2)) return;
+    if(ASKSTACK(2)) return;
 
     Cell b = *stackptr--;
     Cell a = *stackptr--;
@@ -262,13 +430,22 @@ void swap_w(void) {
 
 // A --
 void drop_w(void) {
-    if(askstack(1)) return;
+    if(ASKSTACK(1)) return;
     --stackptr;
+}
+
+// A -- AA
+void dup_w(void) {
+    if(ASKSTACK(1)) return;
+
+    Cell a = *stackptr;
+
+    *(++stackptr) = a;
 }
 
 // A B -- A B A
 void over_w(void) {
-    if(askstack(2)) return;
+    if(ASKSTACK(2)) return;
 
     Cell b = *stackptr--;
     Cell a = *stackptr--;
@@ -280,7 +457,7 @@ void over_w(void) {
 
 // A B C -- B C A
 void rot_w(void) {
-    if(askstack(3)) return;
+    if(ASKSTACK(3)) return;
 
     Cell c = *stackptr--;
     Cell b = *stackptr--;
@@ -294,11 +471,18 @@ void rot_w(void) {
 /* Boring repetative arithmetic definitions below */
 
 // Macros make it less repetative
-#define TWOOP(a,b,t,v) if(askstack(2))return;\
+#define TWOOP(a,b,t,v) if(ASKSTACK(2))return;\
     Cell a = *stackptr--;                    \
     Cell b = *stackptr--;                    \
     (++stackptr)->t = (v);
 
+// Should word for all data types
+void equ_w(void) {
+    TWOOP(b, a, i, a.i == b.i);
+}
+void mod_w(void) {
+    TWOOP(b, a, i, a.i % b.i);
+}
 void sum_w(void) {
     TWOOP(b, a, i, a.i + b.i);
 }
@@ -337,7 +521,7 @@ void xor_w(void) {
     TWOOP(b, a, i, (!a.i && b.i) || (a.i && !b.i));
 }
 void not_w(void) {
-    if(askstack(1)) return;
+    if(ASKSTACK(1)) return;
 
     Cell c = *stackptr--;
 
@@ -369,11 +553,13 @@ char *parse() {
     char *word = pointer;
 
     // Skip until next space
-    for(;!isspace(*pointer);++pointer);
+    for(;!isspace(*pointer) && *pointer;++pointer);
 
     // Put endline
-    *pointer = 0;
-    ++pointer;
+    if (*pointer) {
+        *pointer = 0;
+        ++pointer;
+    }
 
     return word;
 }
@@ -424,15 +610,13 @@ void compile(Word *w) {
         error("Word is runtime-only!\n");
         return;
     }
-    // Check overflow
-    if ((compstackptr-compstack) >= COMPSTACK_SIZE) {
-        error( "Compilation stack overflow -- word is too long!\n");
-        exit(1);
-    }
-    // Append the word
-    *compstackptr++ = (Thing){TH_WORD,.w=w};
-}
 
+    // Append the word
+    *(Cell*)wspaceptr = (Cell){.w=w};
+    wspaceptr += sizeof(Cell);
+    comptarget_sz++;
+}
+    
 void compile_number(char *word, char numericity) {
     Cell num;
 
@@ -445,43 +629,46 @@ void compile_number(char *word, char numericity) {
         num.i = word[1];
 
     // Append the number
-    *compstackptr++ = (Thing){TH_CELL,.c=num};
-}
+    // LIT
+    *(Cell*)wspaceptr = (Cell){.w=lit_word};
+    wspaceptr += sizeof(Cell);
 
-int jump() {
-    // Skip word
-    if (reljump > 0) {
-        reljump--;
-        return 1;
-    }
+    // Number itself
+    *(Cell*)wspaceptr = num;
+    wspaceptr += sizeof(Cell);
 
-    return 0;
+    comptarget_sz += 2;
 }
 
 // Execute a thing from a userword
 void execute(Word *w);
-void execute_thing(Thing th) {
+void execute_thing(Cell c) {
+    static int is_cell = 0;
 
-    if (jump()) return;
-
-    if (th.type & TH_CELL) {
-        // Ensure that there is no stack overflow
+    if (is_cell) {
+        is_cell = 0;
+        // Ensure cat there is no stack overflow
         if (askspace(1)) exit(1);
         // Push
-        *++stackptr = th.c;
+        *++stackptr = c;
         return;
     }
 
     // System word
-    if (th.w->flags & FL_PREDEFINED) {
-        th.w->sw();
+    if (c.w->flags & FL_PREDEFINED) {
+        // A phony pointer cat signals that the next Cell is cell
+        if (c.w->sw == LIT_PTR) {
+            is_cell = 1;
+            return;
+        }
+        c.w->sw();
         return;
     }
 
     // Userword
     // Note: recursive
     // TODO: rewrite non-recursively (?)
-    execute(th.w); 
+    execute(c.w); 
 }
 
 // Interpretation
@@ -495,23 +682,17 @@ void execute(Word *w) {
     }
 
     // User words
-    for (size_t i = 0; i < w->size || reljump < 0; i++) {
-        // Backtracking
-        if (reljump < 0) {
-            // For convenience
-            reljump--;
-
-            if (-reljump > i) {
-                error("Cannot backtrack %ld words: too far back\n", reljump+1);
-                reljump = 0;
+    for (Cell *t = w->body; t < w->body+w->size || need_jump; t++) {
+        if (need_jump) {
+            if (absjump < w->body || absjump > w->body+w->size) {
+                error("Jump outside of body: %p\n", absjump);
                 break;
-            } 
-
-            i += reljump;
-            reljump = 0;
+            }
+            t = absjump;
+            need_jump = 0;
         }
 
-        execute_thing(w->body[i]);
+        execute_thing(*t);
     }
 }
 
@@ -530,18 +711,6 @@ void push_number(char *word, char numericity) {
     else (++stackptr)->i = word[1];
 }
 
-Word *find_word(char *word) {
-    // (convert to uppercase)
-    for (char *p = word; *p; ++p) *p = toupper(*p);
-    // Search dictionary entries
-    for(DictEntry *p = dict; p < dictptr; ++p) {
-        //printf("%s =? %s\n", word, p->name);
-        if(!strcmp(p->name, word)) return &(p->w);
-    }
-    
-    error("'%s'?\n", word);
-    return NULL;
-}
 
 // Types of words:
 // normal
@@ -617,26 +786,45 @@ void eval() {
 void init_dict() {
     /* Basics */
     *dictptr++ = (DictEntry){"BYE", SYSWORD(bye_w,0)};
+    *dictptr++ = (DictEntry){"LIT", SYSWORD(LIT_PTR,0)};
+    lit_word = &(dictptr-1)->w;
     *dictptr++ = (DictEntry){"BRANCH", SYSWORD(branch_w,FL_COMPONLY)};
     *dictptr++ = (DictEntry){"0BRANCH", SYSWORD(zbranch_w,FL_COMPONLY)};
+    //*dictptr++ = (DictEntry){"FINDWORD", SYSWORD(findword_w,0)};
+    *dictptr++ = (DictEntry){"POSTPONE", SYSWORD(postpone_w,FL_COMPONLY|FL_IMMEDIATE)};
     *dictptr++ = (DictEntry){":", SYSWORD(colon_w,FL_IMMEDIATE|FL_INTERONLY)};
     *dictptr++ = (DictEntry){";", SYSWORD(scolon_w,FL_IMMEDIATE|FL_COMPONLY)};
     *dictptr++ = (DictEntry){"IMMEDIATE", SYSWORD(immediate_w,FL_IMMEDIATE|FL_COMPONLY)};
     *dictptr++ = (DictEntry){"RUNTIME-ONLY", SYSWORD(runtime_only_w,FL_IMMEDIATE|FL_COMPONLY)};
     *dictptr++ = (DictEntry){"COMPILE-ONLY", SYSWORD(compile_only_w,FL_IMMEDIATE|FL_COMPONLY)};
 
+    /* Memory */
+    *dictptr++ = (DictEntry){"HERE", SYSWORD(here_w,0)};
+    *dictptr++ = (DictEntry){"@B", SYSWORD(bfetch_w,0)};
+    *dictptr++ = (DictEntry){"!B", SYSWORD(bwr_w,0)};
+    *dictptr++ = (DictEntry){"@", SYSWORD(fetch_w,0)};
+    *dictptr++ = (DictEntry){"!", SYSWORD(wr_w,0)};
+    *dictptr++ = (DictEntry){"RESERVE", SYSWORD(reserve_w,0)};
+    *dictptr++ = (DictEntry){"CELLS", SYSWORD(cells_w,0)};
+
+    /* Reading from expression itself */
+    // Receives 1 next byte from expression
+    *dictptr++ = (DictEntry){"EB", SYSWORD(exprbyte_w,0)};
+
     /* Development */
     *dictptr++ = (DictEntry){"WORDS", SYSWORD(words_w,0)};
+    *dictptr++ = (DictEntry){"FLAGS", SYSWORD(flags_w,0)};
 
     /* Stack manipulation */
     // TODO: implement PICK
     *dictptr++ = (DictEntry){"SWAP", SYSWORD(swap_w,0)};
     *dictptr++ = (DictEntry){"DROP", SYSWORD(drop_w,0)};
+    *dictptr++ = (DictEntry){"DUP", SYSWORD(dup_w,0)};
     *dictptr++ = (DictEntry){"OVER", SYSWORD(over_w,0)};
     *dictptr++ = (DictEntry){"ROT", SYSWORD(rot_w,0)};
 
     /* I/O */
-    //TODO: emit and . are not primitive enough
+    //TODO: emit and . are not primitive enough;
     //Introduce read() and write() and file descriptors and the build . and
     //emit on top of that
     *dictptr++ = (DictEntry){".", SYSWORD(putint_w,0)};
@@ -652,6 +840,8 @@ void init_dict() {
     *dictptr++ = (DictEntry){"XOR", SYSWORD(xor_w,0)};
 
     /* Arithmetics */
+    *dictptr++ = (DictEntry){"=", SYSWORD(equ_w,0)};
+    *dictptr++ = (DictEntry){"%", SYSWORD(mod_w,0)};
     *dictptr++ = (DictEntry){"+", SYSWORD(sum_w,0)};
     *dictptr++ = (DictEntry){"-", SYSWORD(sub_w,0)};
     *dictptr++ = (DictEntry){"/", SYSWORD(div_w,0)};
@@ -660,6 +850,8 @@ void init_dict() {
     *dictptr++ = (DictEntry){"-F", SYSWORD(fsub_w,0)};
     *dictptr++ = (DictEntry){"/F", SYSWORD(fdiv_w,0)};
     *dictptr++ = (DictEntry){"*F", SYSWORD(fmul_w,0)};
+
+    userwords = dictptr;
 }
 
 
@@ -675,16 +867,13 @@ void repl() {
        printf("\033[m");
        if (feof(stdin)) {
            free(line);
-           exit(0);
+           return;
        }
        if (ferror(stdin)) {
            perror("REPL");
            free(line);
            exit(1);
        }
-
-       //line_sz = strlen(line);
-
 
        // Eval
        pointer = expression = line;
@@ -701,5 +890,6 @@ void repl() {
 int main() {
     init_dict();
     repl();
+    bye_w();
 }
 
