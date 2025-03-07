@@ -4,6 +4,7 @@
 #include <string.h>
 #include <ctype.h>
 #include <stdint.h>
+#include <unistd.h> //access()
 
 typedef void (*SysWord)(void);
 typedef struct Word Word;
@@ -14,6 +15,7 @@ typedef union {
     int64_t i;
     uint64_t u;
     double f;
+    char *s;
     void *p;
     Word *w;
 } Cell;
@@ -287,6 +289,115 @@ void cells_w() {
     size_t cells = stacktop--->u; 
 
     (++stacktop)->u = cells*sizeof(Cell);
+}
+
+//void readfile_w() {
+//    
+//}
+
+// DRY!
+#define ASKFILENAME(filename)\
+    if(ASKSTACK(1)) return;\
+    char *filename = stacktop--->s;\
+    if (filename == NULL) {\
+	error("NULL as filename string\n");\
+	return; }
+
+// WR? RD? filename -- fd
+#include <fcntl.h>
+void open_w() {
+    ASKFILENAME(filename);
+
+    if (ASKSTACK(2)) return;
+
+    int rd = stacktop--->u,
+        wr = stacktop--->u;
+
+    int flags = 0;
+
+    if (rd && wr) flags = O_RDWR;
+    else if (rd) flags = O_RDONLY;
+    else if (wr) flags = O_WRONLY;
+    else {
+	error("Invalid combination of RD and WR flags\n");
+	return;
+    }
+
+    int fd = open(filename, flags);
+
+    if (fd == -1) {
+	error("Couldn't open file '%s'\n", filename);
+	perror("");
+    }
+
+    (++stacktop)->i = fd;
+}
+
+void close_w() {
+    if (ASKSTACK(1)) return;
+
+    int fd = stacktop--->i;
+
+    if(close(fd)) {
+	perror("Couldn't close file");
+    }
+}
+
+// Maps file for access
+// FILENAME -- FD ADDR SIZE
+#include <sys/mman.h>
+#include <sys/stat.h>
+void mapfile_w() {
+    if(ASKSTACK(1)) return;
+    if(askspace(2)) return;
+
+    int fd = stacktop--->i;
+
+    // Query file size
+    struct stat statbuf;
+
+    if (fstat(fd, &statbuf)) {
+	error("Couldn't stat file\n");
+	perror("");
+	return;
+    }
+
+    // Do we need to have PROT_EXEC here? It may be unsafe. At the same time, I don't want to put user in a situation
+    // where they need to execute the file but cannot due to interface that doesn't provide enough control
+    // Maybe ask for permissions as an argument
+    void *file = mmap(NULL, statbuf.st_size, PROT_READ|PROT_WRITE|PROT_EXEC, MAP_SHARED, fd, 0);
+
+    if (file == MAP_FAILED) {
+	perror("MAPFILE");
+    }
+    
+    (++stacktop)->p = file;
+    (++stacktop)->u = statbuf.st_size;
+}
+
+// Unmaps and closes file
+void unmapfile_w() {
+    if(ASKSTACK(3)) return;
+
+    size_t sz = stacktop--->u;
+    void *file = stacktop--->p;
+
+    if (munmap(file, sz)) {
+	perror("UNMAPFILE");
+    }
+}
+
+void rmfile_w() {
+    ASKFILENAME(filename);
+    
+    remove(filename);
+}
+
+// Replace by ACCESS
+void filee_w() {
+    ASKFILENAME(filename);
+
+    (++stacktop)->u = access(filename, F_OK);
 }
 
 void putint_w() {
@@ -889,7 +1000,7 @@ void decompile(Word *w) {
             //printf("%p ", p->w);
         }
 
-        else if (name == NULL) printf("<?(%p)> ", (void*)p->w);
+        else if (name == NULL) printf("<?(%p)> ", p->p);
 
         else {
             if (p->w == lit_word) last_lit = 1;
@@ -963,6 +1074,15 @@ void init_dict() {
     *dicttop++ = (DictEntry){"RESERVE", SYSWORD(reserve_w,0)};
     *dicttop++ = (DictEntry){"CELLS", SYSWORD(cells_w,0)};
 
+    /* File management */
+    //*dicttop++ = (DictEntry){"READFILE", SYSWORD(readfile_w,0)};
+    *dicttop++ = (DictEntry){"OPEN", SYSWORD(open_w,0)};
+    *dicttop++ = (DictEntry){"CLOSE", SYSWORD(close_w,0)};
+    *dicttop++ = (DictEntry){"MAPFILE", SYSWORD(mapfile_w,0)};
+    *dicttop++ = (DictEntry){"UNMAPFILE", SYSWORD(unmapfile_w,0)};
+    *dicttop++ = (DictEntry){"FILE-EXISTS?", SYSWORD(filee_w,0)};
+    *dicttop++ = (DictEntry){"RMFILE", SYSWORD(rmfile_w,0)};
+    
     /* Reading from expression itself */
     // Receives 1 next byte from expression
     *dicttop++ = (DictEntry){"EB", SYSWORD(exprbyte_w,0)};
