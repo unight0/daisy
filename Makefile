@@ -1,6 +1,7 @@
 
-CCFLAGS=-fsanitize=address -g
-
+CC=gcc
+DEBUGFLAGS=-fsanitize=address -g
+CCFLAGS=-Wall -Wextra -Wpedantic
 
 kern: kern.c
-	cc $? $(CCFLAGS) -o $@
+	$(CC) $? $(CCFLAGS) $(DEBUGFLAGS) -o $@

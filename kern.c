@@ -7,6 +7,9 @@
 
 typedef void (*SysWord)(void);
 typedef struct Word Word;
+// TODO: x86 - x64 portability
+//typedef int64_t isize_t;
+//typedef uint64_t usize_t;
 typedef union {
     int64_t i;
     uint64_t u;
@@ -35,7 +38,7 @@ enum {
 
 #define SYSWORD(s,fl) (Word){FL_PREDEFINED|(fl),0,.sw=(s)}
 
-// A phony word for compiling numbers into words
+// A phony word for compiling numbers
 void lit_w() {}
 
 // Set in init_dict()
@@ -48,20 +51,21 @@ Cell stack[STACK_SIZE], *stacktop = stack;
 // Name of the currently compiled word
 char *comptarget = NULL;
 
-// Dictionary entries point to the wordspace areas
+// Dictionary entries point to the wordspace areas (apart from predefined words)
 #define DICT_SIZE 256
 typedef struct { char *name; Word w; } DictEntry;
+//NOTE: DictEntry *userwords is not yet used
 DictEntry dict[DICT_SIZE] = {0}, *dicttop = dict, *userwords = dict;
 
 
 // Memory space for words. Nonreleasable allocation for user data is allowed
 // too (through reserve). TODO: add unreserve (?). If we do that, then put in no
-// protection. Fuck it, let the user deallocate even the predefined words and
-// thus erase the whole system at runtime
-// TODO: malloc it
-#define WSPACE_SIZE sizeof(Word)*DICT_SIZE*2
-char wordspace[WSPACE_SIZE] = {0}, *wspacend = wordspace;
-
+// protection.
+// TODO: malloc it (?)
+// WSBLOCKS_SIZE = size of one word space memory block
+#define WSBLOCK_SIZE sizeof(Word)*DICT_SIZE*2
+char wordspace[WSBLOCK_SIZE] = {0}, *wspacend = wordspace;
+//char *wordspace, *wspacend;
 
 // Expression that is processed at the moment
 char *expression = NULL;
@@ -82,11 +86,11 @@ char *lastword = NULL;
 // Display err instead of ok
 int error_happened = 0;
 // Error reporitng
-#define error(cs, ...){\
-    error_happened = 1;\
-    fprintf(stderr, "\033[m\033[1mAt %lu, '%s': ", pointer-expression, lastword);\
-    fprintf(stderr, cs, ##__VA_ARGS__); \
-    fprintf(stderr, "\033[m");}\
+#define error(cs, ...){							\
+	error_happened = 1;						\
+	fprintf(stderr, "\033[m\033[1mAt %lu, '%s': ", pointer-expression, lastword); \
+	fprintf(stderr, cs, ##__VA_ARGS__);				\
+	fprintf(stderr, "\033[m");}					\
 
 // Report insufficient arguments
 void ins_arguments(const char *who, size_t req, size_t got) {
@@ -118,6 +122,33 @@ int askspace(size_t num) {
     return 0;
 }
 
+/*
+  // TODO: wordspace enlargement. Allocate new memory block and set wspacend=wordspace=<newblock>
+  // Keep a list of allocated memory blocks. Free on exit.
+#include <sys/mman.h>
+void wspacealloc() {
+    // NOTE: change MAP_PRIVATE to MAP_SHARED to support multiuser access to the running FORTH system
+    wordspace = mmap(NULL, WSBLOCK_SIZE, PROT_READ|PROT_WRITE|PROT_EXEC, MAP_PRIVATE|MAP_ANON, -1, 0);
+    wspacend = wordspace;
+
+
+    if (wordspace == MAP_FAILED) {
+	perror("Initial memory allocation failed");
+	exit(1);
+    }
+}
+void wspacenlarge(size_t bytes) {
+    size_t endoffs = wspacend-wordspace;
+    char *tmp = wordspace;
+}
+void wspacedealloc() {
+    if(munmap(wordspace, WSBLOCK_SIZE)) {
+	perror("Final memory deallocation failed");
+	exit(1);
+    }
+}
+*/
+
 /* Begin predefined words *******/
 
 // Note: also called from main()
@@ -125,7 +156,15 @@ void bye_w() {
     for (DictEntry *p = userwords; p < dicttop; p++) {
         free(p->name);
     }
+    //wspacedealloc();
     exit(0);
+}
+
+// Pushes address of the state variable onto stack
+void state_w() {
+    if(askspace(1)) return;
+
+    (++stacktop)->p = &state;
 }
 
 // N -- 
@@ -276,7 +315,7 @@ void words_w() {
     for(DictEntry *p = dict; p < dicttop; p++) {
         printf("%s ", p->name);
     }
-    printf("(total %lu/%lu)\n", dicttop-dict, DICT_SIZE);
+    printf("(total %lu/%d)\n", dicttop-dict, DICT_SIZE);
 }
 
 void putflags(char *word, Word *w) {
@@ -285,7 +324,7 @@ void putflags(char *word, Word *w) {
         return;
     }
 
-    printf("'%s' = %lu:\n", word, w->flags);
+    printf("'%s' = %d:\n", word, w->flags);
 
     if (w->flags & FL_PREDEFINED)
         printf("PREDEFINED\n");
@@ -294,7 +333,7 @@ void putflags(char *word, Word *w) {
     if (w->flags & FL_COMPONLY)
         printf("COMPILE-TIME ONLY\n");
     if (w->flags & FL_INTERONLY)
-        printf("RUNTIME-ONLY\n");
+        printf("INTERPRETATION-ONLY\n");
 }
 
 char *parse();
@@ -406,7 +445,7 @@ void compile_only_w() {
 }
 
 // Adds FL_INTERONLY to the currently compiled word
-void runtime_only_w() {
+void interpretation_only_w() {
     find_word(comptarget)->flags |= FL_INTERONLY;
 }
 
@@ -683,12 +722,9 @@ void execute_thing(Cell c) {
 
     // System word
     if (c.w->flags & FL_PREDEFINED) {
-        // A phony pointer cat signals that the next Cell is cell
-        if (c.w->sw == lit_w) {
-            is_cell = 1;
-            return;
-        }
-        c.w->sw();
+        // A phony pointer signals that the next Cell is data 
+        if (c.w->sw == lit_w) is_cell = 1;
+        else c.w->sw();
         return;
     }
 
@@ -712,35 +748,28 @@ void execute(Word *w) {
         return;
     }
 
-    // User words
-    // TODO
-    // Good idea: compile things into assembly at runtime. Then there will be
-    // no need to iterate over the body, we can rather just jump to the segment.
-    // Will need some setup with making the words stored as binary + making this
-    // region executable.
-    // Has a great advantage of:
-    // 1. Simplifying the code. No word datatype, just jumping.
-    // 2. Support for compilation. The compilation will be able to be done from
-    // user-side without excessive code, just writing what is in memory into
-    // files.
-    // A great difficulty, however, is:
-    // Compiling words
-    // (We will need to transfer such things as stacktop and dictptr and others
-    // into registers and stuff) (will we?)
-    for (Cell *t = w->body; t < w->end; t++) {
+    Cell *t;
+    for (t = w->body; t < w->end; t++) {
+	//printf("Executing at %p\n", (void*)t);
+        execute_thing(*t);
+	
         if (need_jump) {
-            if (absjump < w->body || absjump > w->end) {
-                error("Jump outside of body: %p\n", absjump);
+	    //printf("-- Received need_jump to %p\n", (void*)absjump);
+	    //if (absjump == w->end) printf("-- This is the w->end\n");
+	    need_jump = 0;
+	    if (absjump < w->body || absjump > w->end) {
+                error("Jump outside of body: %p\n", (void*)absjump);
                 break;
             }
 
             t = absjump;
-            need_jump = 0;
+
+	    // Allow programs to branch to w->end and thus end execution
+	    t--;
             continue;
         }
-
-        execute_thing(*t);
     }
+    //printf("Ended execution at %p\n", (void*)t);
 }
 
 
@@ -780,9 +809,9 @@ int flagcheck(Word *w) {
             
     // Compiling
     if (state) {
-        // Runtime-only
+        // Interpretation-only
         if (w->flags & FL_INTERONLY) {
-            error("Compiling runtime-only word\n");
+            error("Word is interpretation-only\n");
             return 1;
         }
         return 0;
@@ -792,7 +821,7 @@ int flagcheck(Word *w) {
 
     // Should not be executed
     if (w->flags & FL_COMPONLY) {
-        error("Executing a compile-only word\n");
+        error("Word is compile-only\n");
         return 1;
     }
 
@@ -857,12 +886,14 @@ void decompile(Word *w) {
         if (name == NULL && last_lit) {
             last_lit = 0;
             printf("%lu ", p->i);
+            //printf("%p ", p->w);
         }
 
-        else if (name == NULL) printf("<?(%p)> ", p->w);
+        else if (name == NULL) printf("<?(%p)> ", (void*)p->w);
 
         else {
             if (p->w == lit_word) last_lit = 1;
+            //printf("%s{%p} ", name, p);
             printf("%s ", name);
         }
     }
@@ -919,11 +950,12 @@ void init_dict() {
     *dicttop++ = (DictEntry){":", SYSWORD(colon_w,FL_IMMEDIATE|FL_INTERONLY)};
     *dicttop++ = (DictEntry){";", SYSWORD(scolon_w,FL_IMMEDIATE|FL_COMPONLY)};
     *dicttop++ = (DictEntry){"IMMEDIATE", SYSWORD(immediate_w,FL_IMMEDIATE|FL_COMPONLY)};
-    *dicttop++ = (DictEntry){"RUNTIME-ONLY", SYSWORD(runtime_only_w,FL_IMMEDIATE|FL_COMPONLY)};
+    *dicttop++ = (DictEntry){"INTERPRETATION-ONLY", SYSWORD(interpretation_only_w,FL_IMMEDIATE|FL_COMPONLY)};
     *dicttop++ = (DictEntry){"COMPILE-ONLY", SYSWORD(compile_only_w,FL_IMMEDIATE|FL_COMPONLY)};
 
     /* Memory */
     *dicttop++ = (DictEntry){"HERE", SYSWORD(here_w,0)};
+    *dicttop++ = (DictEntry){"STATE", SYSWORD(state_w,0)};
     *dicttop++ = (DictEntry){"@B", SYSWORD(bfetch_w,0)};
     *dicttop++ = (DictEntry){"!B", SYSWORD(bwr_w,0)};
     *dicttop++ = (DictEntry){"@", SYSWORD(fetch_w,0)};
@@ -1013,11 +1045,11 @@ void repl() {
     }
 }
 
-char *load_file(char *filepath) {
+char *load_file(const char *filepath) {
     FILE *f = fopen(filepath, "r");
 
     if (f == NULL) {
-        perror("load_file");
+        perror(filepath);
         return NULL;
     }
 
@@ -1037,12 +1069,16 @@ char *load_file(char *filepath) {
 }
 
 #include <signal.h>
-void fpe_handle(int) {
+void fpe_handle(int _sig) {
+    (void)_sig;
+    // NOTE: if this happens, we need to introduce a check into one of the words
+    // that involves division
     error("Uncaught FPE\n");
     exit(1);
 }
 
-void segv_handle(int) {
+void segv_handle(int _sig) {
+    (void)_sig;
     error("Segmentation fault!\n");
     //TODO: attempt recovery? When the kernel is ready enough, all segmentation
     //faults will be due to erroneous user read/writes, and thus preventing
@@ -1053,10 +1089,12 @@ void segv_handle(int) {
 int main(int argc, char **argv) {
     signal(SIGFPE, fpe_handle);
     //signal(SIGSEGV, segv_handle);
+    //wspacealloc();
     init_dict();
     if (argc > 1) {
         for (int i = 1; i < argc; i++) {
             char *f = load_file(argv[i]);
+	    
             if (f == NULL) continue;
 
             pointer = expression = f;
