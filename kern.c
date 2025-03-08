@@ -5,6 +5,8 @@
 #include <ctype.h>
 #include <stdint.h>
 #include <unistd.h> //access()
+#include <fcntl.h>
+#include <sys/stat.h>
 
 typedef void (*SysWord)(void);
 typedef struct Word Word;
@@ -60,8 +62,9 @@ typedef struct { char *name; Word w; } DictEntry;
 DictEntry dict[DICT_SIZE] = {0}, *dicttop = dict, *userwords = dict;
 
 
-// Memory space for words. Nonreleasable allocation for user data is allowed
-// too (through reserve). TODO: add unreserve (?). If we do that, then put in no
+// Memory space for words. Allocation for user data is allowed
+// too (through reserve). Memory release is available (though limited) through
+// supplying negative values to reserve
 // protection.
 // TODO: malloc it (?)
 // WSBLOCKS_SIZE = size of one word space memory block
@@ -85,12 +88,13 @@ Cell *absjump = 0;
 // For errors 
 char *lastword = NULL;
 
+size_t line = 0;
 // Display err instead of ok
 int error_happened = 0;
 // Error reporitng
 #define error(cs, ...){							\
 	error_happened = 1;						\
-	fprintf(stderr, "\033[m\033[1mAt %lu, '%s': ", pointer-expression, lastword); \
+	fprintf(stderr, "\033[m\033[1mAt %lu:%lu, '%s': ", line, pointer-expression, lastword); \
 	fprintf(stderr, cs, ##__VA_ARGS__);				\
 	fprintf(stderr, "\033[m");}					\
 
@@ -154,12 +158,20 @@ void wspacedealloc() {
 /* Begin predefined words *******/
 
 // Note: also called from main()
-void bye_w() {
+void bye(int c) {
     for (DictEntry *p = userwords; p < dicttop; p++) {
         free(p->name);
     }
     //wspacedealloc();
-    exit(0);
+    exit(c);
+}
+
+void exit_w() {
+    if(ASKSTACK(1)) return;
+
+    int c = stacktop--->i;
+    
+    bye(c);
 }
 
 // Pushes address of the state variable onto stack
@@ -237,7 +249,7 @@ void bfetch_w() {
     if (askspace(1)) return;
 
     char *ptr = (char*)stacktop--->p;
-    
+
     (++stacktop)->i = *ptr;
 }
 
@@ -247,7 +259,7 @@ void bwr_w() {
 
     char *addr = stacktop--->p;
     char byte = (char)stacktop--->i;
-    
+
     *addr = byte;
 }
 
@@ -257,7 +269,7 @@ void fetch_w() {
     if (askspace(1)) return;
 
     Cell *ptr = (Cell*)stacktop--->p;
-    
+
     *++stacktop = *ptr;
 }
 
@@ -267,7 +279,7 @@ void wr_w() {
 
     Cell *addr = stacktop--->p;
     Cell c = *stacktop--;
-    
+
     *addr = c;
 }
 
@@ -276,7 +288,7 @@ void wr_w() {
 void reserve_w() {
     if (ASKSTACK(1)) return;
     
-    size_t bytes = stacktop--->u; 
+    size_t bytes = stacktop--->i; 
 
     wspacend += bytes;
 }
@@ -303,11 +315,8 @@ void cells_w() {
 	error("NULL as filename string\n");\
 	return; }
 
-// WR? RD? filename -- fd
-#include <fcntl.h>
+// filename WR? RD? -- fd
 void open_w() {
-    ASKFILENAME(filename);
-
     if (ASKSTACK(2)) return;
 
     int rd = stacktop--->u,
@@ -322,7 +331,9 @@ void open_w() {
 	error("Invalid combination of RD and WR flags\n");
 	return;
     }
-
+    
+    ASKFILENAME(filename);
+    
     int fd = open(filename, flags);
 
     if (fd == -1) {
@@ -333,20 +344,153 @@ void open_w() {
     (++stacktop)->i = fd;
 }
 
+// Creates a new file and opens it
+// FILENAME -- FD
+void touch_w() {
+    ASKFILENAME(filename);
+
+    int fd = open(filename, O_CREAT|O_RDWR|O_TRUNC, 0644);
+
+    if (fd == -1) {
+	error("Could'n touch '%s': ", filename);
+	perror("");
+    }
+
+    // Return -1
+    (++stacktop)->i = fd;
+}
+
+// Closes file
+// FD --
 void close_w() {
     if (ASKSTACK(1)) return;
 
     int fd = stacktop--->i;
 
     if(close(fd)) {
-	perror("Couldn't close file");
+	error("Couldn't close file: ");
+	perror("");
     }
 }
 
+// Queries file size
+// FD -- FD SIZE
+void filesize_w() {
+    if (askspace(1)) return;
+
+    int fd = stacktop->i;
+
+    struct stat statbuf;
+    
+    if (fstat(fd, &statbuf)) {
+	error("Couldn't stat file: ");
+	perror("");
+	return;
+    }
+
+    (++stacktop)->u = statbuf.st_size;
+}
+
+// Resizes file
+// FD SIZE -- FD
+void trunc_w() {
+    if (ASKSTACK(2)) return;
+
+    size_t sz = stacktop--->u;
+    int fd = stacktop->i;
+
+    printf("Truncating to %lu\n", sz);
+    if (ftruncate(fd, sz)) {
+	error("Couldn't truncate(resize) file: ");
+	perror("");
+    }
+}
+
+// Write byte to file
+// FD B -- FD
+void fwb_w() {
+    if (ASKSTACK(2)) return;
+
+    char byte = stacktop--->u;
+
+    int fd = stacktop->i;
+
+    if(write(fd, &byte, 1) == -1) {
+	error("Couldn't write to file: ");
+	perror("");
+    }
+}
+
+// Writes to file
+// FD BUF LEN -- FD
+void write_w() {
+    if (ASKSTACK(3)) return;
+
+    size_t len = stacktop--->u;
+
+    void *buf = stacktop--->p;
+
+    int fd = stacktop->i;
+
+    if(write(fd, buf, len) == -1) {
+	error("Couldn't write to file: ");
+	perror("");
+    }
+}
+
+// Fetch byte from file
+// FD -- FD
+void ffetch_w() {
+    if (ASKSTACK(1)) return;
+
+    int fd = stacktop->i;
+    
+    char buf;
+
+    if(read(fd, &buf, 1)) {
+	error("Couldn't read from file: ");
+	perror("");
+    }
+
+    (++stacktop)->i = buf;
+}
+
+// Read from file
+// FD BUF LEN -- FD BUF
+void read_w() {
+    if (ASKSTACK(3)) return;
+
+    size_t len = stacktop--->u;
+    
+    void *buf = stacktop--->p;
+    
+    int fd = stacktop->i;
+
+
+    if(read(fd, &buf, len)) {
+	error("Couldn't read from file: ");
+	perror("");
+    }
+
+    (++stacktop)->p = buf;
+}
+
+// Set offset to N
+// FD OFFS - FD
+void seek_w() {
+    if (ASKSTACK(2)) return;
+
+    off_t offs = stacktop--->u;
+
+    int fd = stacktop->i;
+
+    lseek(fd, offs, SEEK_SET);
+}
+
+/*
 // Maps file for access
 // FILENAME -- FD ADDR SIZE
 #include <sys/mman.h>
-#include <sys/stat.h>
 void mapfile_w() {
     if(ASKSTACK(1)) return;
     if(askspace(2)) return;
@@ -357,18 +501,34 @@ void mapfile_w() {
     struct stat statbuf;
 
     if (fstat(fd, &statbuf)) {
-	error("Couldn't stat file\n");
+	error("Couldn't stat file: ");
 	perror("");
 	return;
     }
 
+    int flags = fcntl(fd, F_GETFL);
+
+    if (flags == -1) {
+	error("Could not get fd flags: ");
+	perror("");
+	return;
+    }
+
+    int prot = 0;
+    
+    if ((flags & O_ACCMODE) != O_WRONLY) prot |= PROT_READ;
+    if ((flags & O_ACCMODE) != O_RDONLY) prot |= PROT_WRITE;
+
     // Do we need to have PROT_EXEC here? It may be unsafe. At the same time, I don't want to put user in a situation
     // where they need to execute the file but cannot due to interface that doesn't provide enough control
     // Maybe ask for permissions as an argument
-    void *file = mmap(NULL, statbuf.st_size, PROT_READ|PROT_WRITE|PROT_EXEC, MAP_SHARED, fd, 0);
-
+    //void *file = mmap(NULL, statbuf.st_size, prot, MAP_SHARED, fd, 0);
+    void *file = mmap(NULL, statbuf.st_size, prot, MAP_SHARED, fd, 0);
+    
     if (file == MAP_FAILED) {
-	perror("MAPFILE");
+	error("Couldn't map file: ");
+	perror("");
+	return;
     }
     
     (++stacktop)->p = file;
@@ -383,21 +543,27 @@ void unmapfile_w() {
     void *file = stacktop--->p;
 
     if (munmap(file, sz)) {
-	perror("UNMAPFILE");
+	error("Couldn't unmap file: ");
+	perror("");
     }
 }
+*/
 
 void rmfile_w() {
     ASKFILENAME(filename);
     
-    remove(filename);
+    if(remove(filename)) {
+	error("Couldn't delete file '%s'\n", filename);
+	perror("");
+    }
 }
 
 // Replace by ACCESS
 void filee_w() {
     ASKFILENAME(filename);
 
-    (++stacktop)->u = access(filename, F_OK);
+    // Returns 0 if exists, returns -1 if doesn't
+    (++stacktop)->u = !access(filename, F_OK);
 }
 
 void putint_w() {
@@ -624,6 +790,12 @@ void rot_w(void) {
 void equ_w(void) {
     TWOOP(b, a, i, a.i == b.i);
 }
+void gre_w(void) {
+    TWOOP(b, a, i, a.i > b.i)
+}
+void les_w(void) {
+    TWOOP(b, a, i, a.i < b.i);
+}
 void mod_w(void) {
     TWOOP(b, a, i, a.i % b.i);
 }
@@ -722,15 +894,14 @@ void prompt() {
 char *parse() {
 
     // Remember last word processed for errors
-    lastword = pointer;
 
     // End of line
     if (!*pointer) return NULL;
 
     // Skip spaces
-    for(;isspace(*pointer);++pointer);
+    for(;isspace(*pointer);++pointer) if (*pointer == '\n') line++;
 
-    char *word = pointer;
+    char *word = lastword = pointer;
 
     // Skip until next space
     for(;!isspace(*pointer) && *pointer;++pointer);
@@ -1011,16 +1182,6 @@ void decompile(Word *w) {
     putchar('\n');
 }
 
-//TODO: see should be implemented in userspace.
-//1. allow direct access to dictionary
-//  1.1. simplify word structure (optional)
-//  1.2. disable aligning for struct Word
-//  1.3. clear user access to modifying words
-//  1.4. DP returns pointer to dictionary
-//  1.5. DPP return dicttop
-//  1.6. DPSIZE returns max dict size
-//  1.5. Flexible-size dictionary (?)
-//...
 void see_w() {
     if(askspace(1)) return;
 
@@ -1052,7 +1213,7 @@ void see_w() {
 // Dictionary initialization
 void init_dict() {
     /* Basics */
-    *dicttop++ = (DictEntry){"BYE", SYSWORD(bye_w,0)};
+    *dicttop++ = (DictEntry){"EXIT", SYSWORD(exit_w,0)};
     *dicttop++ = (DictEntry){"LIT", SYSWORD(lit_w,FL_IMMEDIATE)};
     lit_word = &(dicttop-1)->w;
     *dicttop++ = (DictEntry){"BRANCH", SYSWORD(branch_w,FL_COMPONLY)};
@@ -1077,11 +1238,23 @@ void init_dict() {
     /* File management */
     //*dicttop++ = (DictEntry){"READFILE", SYSWORD(readfile_w,0)};
     *dicttop++ = (DictEntry){"OPEN", SYSWORD(open_w,0)};
+    *dicttop++ = (DictEntry){"TOUCH", SYSWORD(touch_w,0)};
+    *dicttop++ = (DictEntry){"TRUNC", SYSWORD(trunc_w,0)};
+    *dicttop++ = (DictEntry){"F!", SYSWORD(fwb_w,0)};
+    *dicttop++ = (DictEntry){"F@", SYSWORD(ffetch_w,0)};
+    *dicttop++ = (DictEntry){"WRITE", SYSWORD(write_w,0)};
+    *dicttop++ = (DictEntry){"READ", SYSWORD(read_w,0)};
+    *dicttop++ = (DictEntry){"SEEK", SYSWORD(seek_w,0)};
+    *dicttop++ = (DictEntry){"FILESIZE", SYSWORD(filesize_w,0)};
     *dicttop++ = (DictEntry){"CLOSE", SYSWORD(close_w,0)};
-    *dicttop++ = (DictEntry){"MAPFILE", SYSWORD(mapfile_w,0)};
-    *dicttop++ = (DictEntry){"UNMAPFILE", SYSWORD(unmapfile_w,0)};
     *dicttop++ = (DictEntry){"FILE-EXISTS?", SYSWORD(filee_w,0)};
     *dicttop++ = (DictEntry){"RMFILE", SYSWORD(rmfile_w,0)};
+
+    // Very efficient, but introduces its own problems that overpower
+    // the benefits
+    //*dicttop++ = (DictEntry){"MAPFILE", SYSWORD(mapfile_w,0)};
+    //*dicttop++ = (DictEntry){"UNMAPFILE", SYSWORD(unmapfile_w,0)};
+
     
     /* Reading from expression itself */
     // Receives 1 next byte from expression
@@ -1118,6 +1291,8 @@ void init_dict() {
 
     /* Arithmetics */
     *dicttop++ = (DictEntry){"=", SYSWORD(equ_w,0)};
+    *dicttop++ = (DictEntry){">", SYSWORD(gre_w,0)};
+    *dicttop++ = (DictEntry){"<", SYSWORD(les_w,0)};
     *dicttop++ = (DictEntry){"%", SYSWORD(mod_w,0)};
     *dicttop++ = (DictEntry){"+", SYSWORD(sum_w,0)};
     *dicttop++ = (DictEntry){"-", SYSWORD(sub_w,0)};
@@ -1197,26 +1372,18 @@ void fpe_handle(int _sig) {
     exit(1);
 }
 
-void segv_handle(int _sig) {
-    (void)_sig;
-    error("Segmentation fault!\n");
-    //TODO: attempt recovery? When the kernel is ready enough, all segmentation
-    //faults will be due to erroneous user read/writes, and thus preventing
-    //abort from the programm will be saving the session of the user.
-    exit(1);
-}
 
 int main(int argc, char **argv) {
     signal(SIGFPE, fpe_handle);
-    //signal(SIGSEGV, segv_handle);
     //wspacealloc();
     init_dict();
     if (argc > 1) {
         for (int i = 1; i < argc; i++) {
             char *f = load_file(argv[i]);
-	    
+
             if (f == NULL) continue;
 
+	    line = 0;
             pointer = expression = f;
 
             eval();
@@ -1226,6 +1393,6 @@ int main(int argc, char **argv) {
         }
     }
     repl();
-    bye_w();
+    bye(0);
 }
 

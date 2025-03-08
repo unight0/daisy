@@ -1,3 +1,5 @@
+: bye 0 exit ;
+
 : != = not ;
 
 : cell 1 cells ;
@@ -28,8 +30,14 @@
 
 : done immediate compile-only swap ,, postpone branch here swap ! ;
 
-: \ while eb dup 10 != swap 0 != and do done ;
-\ This is a comment!
+: \ immediate while eb dup 10 != swap 0 != and do done ;
+\ This is a one-line-comment!
+
+: ( immediate while eb dup ')' != swap 0 != and do done ;
+
+( This is a
+  multiline comment
+  Note: multiline comments don't work in REPL.  )
 
 : ." while eb dup '"' != over 0 != and do emit done drop ;
 
@@ -38,6 +46,28 @@
 
 \ Types out a c-string
 : type while dup @b dup 0 != do emit 1 + done drop drop ;
+
+\ Idea: :noname ;run syntax. Compiles a noname word, executes it, unreserves memory
+
+: cr 10 emit ;
+
+: space 32 ;
+
+: newline 10 ;
+
+\ These definitions assist OPEN
+: rdonly 0 1 ;
+: wronly 1 0 ;
+: rdwr 1 1 ;
+
+: 1+ 1 + ;
+: 1- 1 - ;
+
+\ ( A B -- B ) writes cell A to address B preserving B on stack
+: !! dup rot swap ! ;
+
+\ ( A B -- B ) writes byte A to addres B preserving B on stack
+: !!b dup rot swap !b ;
 
 : [eb] immediate compile-only eb ,, ;
 
@@ -50,3 +80,6 @@
 : t3 1 if 100 . 10 emit endif ;
 
 : t4 0 while 1 + dup 10 != do dup . 10 emit done ;
+
+" Hello, world!"
+: t5 [ ,, ] type cr ;
