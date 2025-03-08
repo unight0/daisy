@@ -1307,16 +1307,25 @@ void init_dict() {
 }
 
 
+#include <readline/readline.h>
+#include <readline/history.h>
+
 void repl() {
    char *line = NULL;
-   size_t line_sz = 0;
+   //size_t line_sz = 0;
 
    // Loop
    while (1) {
        // Read
        //prompt();
        printf("\033[3m");
-       getline(&line, &line_sz, stdin);
+       //getline(&line, &line_sz, stdin);
+       line = readline(NULL);
+
+       if (line == NULL) continue;
+       
+       if (*line) add_history(line);
+       
        printf("\033[m");
        if (feof(stdin)) {
            free(line);
