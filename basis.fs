@@ -49,6 +49,12 @@
 
 \ Idea: :noname ;run syntax. Compiles a noname word, executes it, unreserves memory
 
+\ Idea: FFI
+\ dlopen libc.so
+\ 3 1 ffi socket socket dlerr? ...
+\ dlclose
+
+
 : cr 10 emit ;
 
 : space 32 ;
@@ -59,6 +65,14 @@
 : rdonly 0 1 ;
 : wronly 1 0 ;
 : rdwr 1 1 ;
+
+: f! here swap ,b 1 write -1 reserve ;
+\ Temporairly allocate a buffer of 1 byte,
+\ Read into it,
+\ Read the byte from the buffer onto stack,
+\ Unreserve the buffer
+: f@ here swap here 0 ,b 1 read swap @b -1 reserve ;
+
 
 : 1+ 1 + ;
 : 1- 1 - ;

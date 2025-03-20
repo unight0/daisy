@@ -1,7 +1,7 @@
 
 CC=gcc
 DEBUGFLAGS=-fsanitize=address -g
-CCFLAGS=-Wall -Wextra -Wpedantic
+CCFLAGS=-Wall -Wextra -Wpedantic -Werror
 LDFLAGS=-lreadline
 
 kern: kern.c

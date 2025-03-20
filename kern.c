@@ -291,6 +291,13 @@ void reserve_w() {
     size_t bytes = stacktop--->i; 
 
     wspacend += bytes;
+
+    if (wspacend < wordspace) {
+	error("Bottom break: wspacend < wordspace.\n\
+Too many bytes have been unreserved.\n\
+Attempting a fix...\n");
+	wspacend = wordspace;
+    }
 }
 
 // Pushes the amount of bytes occupied by N cells
@@ -548,6 +555,16 @@ void unmapfile_w() {
     }
 }
 */
+
+void rename_w() {
+    ASKFILENAME(to);
+    ASKFILENAME(from);
+    
+    if(rename(from, to)) {
+	    error("Couldn't rename file '%s' to '%s'\n", from, to);
+	    perror("");
+    }
+}
 
 void rmfile_w() {
     ASKFILENAME(filename);
@@ -1240,14 +1257,15 @@ void init_dict() {
     *dicttop++ = (DictEntry){"OPEN", SYSWORD(open_w,0)};
     *dicttop++ = (DictEntry){"TOUCH", SYSWORD(touch_w,0)};
     *dicttop++ = (DictEntry){"TRUNC", SYSWORD(trunc_w,0)};
-    *dicttop++ = (DictEntry){"F!", SYSWORD(fwb_w,0)};
-    *dicttop++ = (DictEntry){"F@", SYSWORD(ffetch_w,0)};
+    //*dicttop++ = (DictEntry){"F!", SYSWORD(fwb_w,0)};
+    //*dicttop++ = (DictEntry){"F@", SYSWORD(ffetch_w,0)};
     *dicttop++ = (DictEntry){"WRITE", SYSWORD(write_w,0)};
     *dicttop++ = (DictEntry){"READ", SYSWORD(read_w,0)};
     *dicttop++ = (DictEntry){"SEEK", SYSWORD(seek_w,0)};
     *dicttop++ = (DictEntry){"FILESIZE", SYSWORD(filesize_w,0)};
     *dicttop++ = (DictEntry){"CLOSE", SYSWORD(close_w,0)};
     *dicttop++ = (DictEntry){"FILE-EXISTS?", SYSWORD(filee_w,0)};
+    *dicttop++ = (DictEntry){"RENAME", SYSWORD(rename_w,0)};
     *dicttop++ = (DictEntry){"RMFILE", SYSWORD(rmfile_w,0)};
 
     // Very efficient, but introduces its own problems that overpower
@@ -1385,6 +1403,7 @@ void fpe_handle(int _sig) {
 int main(int argc, char **argv) {
     signal(SIGFPE, fpe_handle);
     //wspacealloc();
+    
     init_dict();
     if (argc > 1) {
         for (int i = 1; i < argc; i++) {
