@@ -24,7 +24,6 @@ typedef union {
 
 struct Word {
     char flags;
-    //size_t size;
     Cell *end;
     //char signature;
     union {
@@ -413,20 +412,6 @@ void trunc_w() {
     }
 }
 
-// Write byte to file
-// FD B -- FD
-void fwb_w() {
-    if (ASKSTACK(2)) return;
-
-    char byte = stacktop--->u;
-
-    int fd = stacktop->i;
-
-    if(write(fd, &byte, 1) == -1) {
-	error("Couldn't write to file: ");
-	perror("");
-    }
-}
 
 // Writes to file
 // FD BUF LEN -- FD
@@ -440,26 +425,9 @@ void write_w() {
     int fd = stacktop->i;
 
     if(write(fd, buf, len) == -1) {
-	error("Couldn't write to file: ");
-	perror("");
+	    error("Couldn't write to file: ");
+	    perror("");
     }
-}
-
-// Fetch byte from file
-// FD -- FD
-void ffetch_w() {
-    if (ASKSTACK(1)) return;
-
-    int fd = stacktop->i;
-    
-    char buf;
-
-    if(read(fd, &buf, 1)) {
-	error("Couldn't read from file: ");
-	perror("");
-    }
-
-    (++stacktop)->i = buf;
 }
 
 // Read from file
@@ -475,8 +443,8 @@ void read_w() {
 
 
     if(read(fd, &buf, len)) {
-	error("Couldn't read from file: ");
-	perror("");
+	    error("Couldn't read from file: ");
+	    perror("");
     }
 
     (++stacktop)->p = buf;
@@ -493,68 +461,6 @@ void seek_w() {
 
     lseek(fd, offs, SEEK_SET);
 }
-
-/*
-// Maps file for access
-// FILENAME -- FD ADDR SIZE
-#include <sys/mman.h>
-void mapfile_w() {
-    if(ASKSTACK(1)) return;
-    if(askspace(2)) return;
-
-    int fd = stacktop--->i;
-
-    // Query file size
-    struct stat statbuf;
-
-    if (fstat(fd, &statbuf)) {
-	error("Couldn't stat file: ");
-	perror("");
-	return;
-    }
-
-    int flags = fcntl(fd, F_GETFL);
-
-    if (flags == -1) {
-	error("Could not get fd flags: ");
-	perror("");
-	return;
-    }
-
-    int prot = 0;
-    
-    if ((flags & O_ACCMODE) != O_WRONLY) prot |= PROT_READ;
-    if ((flags & O_ACCMODE) != O_RDONLY) prot |= PROT_WRITE;
-
-    // Do we need to have PROT_EXEC here? It may be unsafe. At the same time, I don't want to put user in a situation
-    // where they need to execute the file but cannot due to interface that doesn't provide enough control
-    // Maybe ask for permissions as an argument
-    //void *file = mmap(NULL, statbuf.st_size, prot, MAP_SHARED, fd, 0);
-    void *file = mmap(NULL, statbuf.st_size, prot, MAP_SHARED, fd, 0);
-    
-    if (file == MAP_FAILED) {
-	error("Couldn't map file: ");
-	perror("");
-	return;
-    }
-    
-    (++stacktop)->p = file;
-    (++stacktop)->u = statbuf.st_size;
-}
-
-// Unmaps and closes file
-void unmapfile_w() {
-    if(ASKSTACK(3)) return;
-
-    size_t sz = stacktop--->u;
-    void *file = stacktop--->p;
-
-    if (munmap(file, sz)) {
-	error("Couldn't unmap file: ");
-	perror("");
-    }
-}
-*/
 
 void rename_w() {
     ASKFILENAME(to);
@@ -743,6 +649,64 @@ void interpretation_only_w() {
     find_word(comptarget)->flags |= FL_INTERONLY;
 }
 
+
+// Identifies the actual file using the filehint
+// Filehints can look like:
+// <filename> (will attempt to look in '.' and in INCLUDE_PATH)
+// "<exact-filename>"
+char *find_by_filehint(char *filehint) {
+    // <exact-filename>
+    if (*filehint == '"' && filehint[strlen(filehint)-1] == '"') {
+	filehint[strlen(filehint)-1] = 0;
+	filehint++;
+	return filehint;
+    }
+
+    // Local directory
+    if (access(filehint, F_OK) == 0) {
+	return filehint;
+    }
+    
+    // Tip: Define INCLUDE_PATH from the outside
+#ifndef INCLUDE_PATH
+    return NULL;
+#else
+    // Should be enough
+    static char path[1024] = {0};
+    strncpy(path, INCLUDE_PATH, 1024);
+
+    // Append the '/' at the end
+    if (path[strlen(path)-1] != '/') {
+	path[strlen(path)] = '/';
+    }
+
+    strncat(path, filehint, 1024-strlen(path));
+    
+    // Cannot find file
+    if (access(path, F_OK)) {
+	return NULL;
+    }
+    return path;
+#endif
+}
+
+void eval_file(const char *filename);
+// Loads file
+void load_w() {
+    char *filehint = parse();
+    
+    char *filename = find_by_filehint(filehint);
+
+    if (filename == NULL) {
+	error("Could not understand filehint!\n");
+	return;
+    }
+    
+    //printf("Located file for loading: '%s'\n", filename);
+
+    eval_file(filename);
+}
+
 // A B -- B A
 void swap_w(void) {
     if(ASKSTACK(2)) return;
@@ -902,26 +866,34 @@ void ok() {
         printf("\033[1m%sok\033[m\n", cm);
 }
 
-void prompt() {
-    if (state)
-        printf("[C] ");
-    else printf("[I] ");
-}
-
 char *parse() {
-
-    // Remember last word processed for errors
-
+    if (pointer == NULL) return NULL;
+    
     // End of line
     if (!*pointer) return NULL;
 
     // Skip spaces
     for(;isspace(*pointer);++pointer) if (*pointer == '\n') line++;
-
+    
+    // Remember last word processed for errors
     char *word = lastword = pointer;
 
-    // Skip until next space
-    for(;!isspace(*pointer) && *pointer;++pointer);
+    int escape = 0;
+    // A string
+    if (*pointer == '"') {
+	pointer++;
+	// Skip until closing '"'
+	// NOTE: only anknowledges character escaping, doesn't convert them to the corresponding character
+	for(;(*pointer != '"'||escape) && *pointer;++pointer) {
+	    if (escape) escape = 0;
+	    if (*pointer == '\\') escape = 1;
+	}
+	pointer++;
+    }
+    else {
+	// Skip until next space
+	for(;!isspace(*pointer) && *pointer;++pointer);
+    }
 
     // Put endline
     if (*pointer) {
@@ -936,13 +908,19 @@ char *parse() {
 // 1 -- integer
 // 2 -- float
 // 3 -- char
+// 4 -- string
 char identify(char* word) {
     int dotcount, signcount, cc;
     dotcount = signcount = cc = 0;
 
-    // 'c' -- for char
+    // Char looks like 'c'
     if (strlen(word) == 3 && *word == '\'' && word[2] == '\'') {
         return 3;
+    }
+
+    // String looks like "string" (spaces are supported through parse())
+    if (*word == '"' && word[strlen(word)-1] == '"') {
+	return 4;
     }
 
     for(;*word;++word,++cc) {
@@ -1127,6 +1105,45 @@ int flagcheck(Word *w) {
     return 0;
 }
 
+char *load_string_wspace(char *str) {
+    char *begin = wspacend;
+
+    int escape = 0;
+    for (char *p = str; *p && p < (str+strlen(str)); ++p) {
+	if (*p == '\\' && !escape) {
+	    escape = 1;
+	    continue;
+	}
+
+	if (!escape) {
+	    *wspacend++ = *p;
+	    continue;
+	}
+	
+	// Escaped characters below
+	escape = 0;
+
+	if (*p == '\\') {
+	    *wspacend++ = '\\';
+	}
+	else if (*p == 'n') {
+	    *wspacend++ = '\n';
+	}
+	else if (*p == 't') {
+	    *wspacend++ = '\t';
+	}
+	else if (*p == '"') {
+	    *wspacend++ = '"';
+	}
+    }
+    // Finish the c-string
+    *wspacend++ = 0;
+
+    //printf("Loaded into wspace: '%s'", begin);
+
+    return begin;
+}
+
 void eval() {
    while(1) {
        char *word = parse();
@@ -1134,17 +1151,25 @@ void eval() {
        if (word == NULL) break;
        if (*word == 0) break;
 
-       //TODO: split into runtime() and compiletime() as follows.
-       //if (state) runtime(word);
-       //else compiletime(word);
-       
        // Identify type
-       char numericity = identify(word);
+       char type = identify(word);
 
+       // String
+       if (type == 4) {
+	   // Cut the '"' off
+	   word++;
+	   word[strlen(word)-1] = 0;
+
+	   // Load into wspace, put pointer onto stack
+	   (++stacktop)->p = load_string_wspace(word);
+
+	   continue;
+       }
+       
        // Numbers are just pushed to stack
-       if (numericity) {
-           if (state) compile_number(word, numericity);
-           else push_number(word, numericity);
+       if (type) {
+           if (state) compile_number(word, type);
+           else push_number(word, type);
            continue;
        }
 
@@ -1241,6 +1266,7 @@ void init_dict() {
     *dicttop++ = (DictEntry){"IMMEDIATE", SYSWORD(immediate_w,FL_IMMEDIATE|FL_COMPONLY)};
     *dicttop++ = (DictEntry){"INTERPRETATION-ONLY", SYSWORD(interpretation_only_w,FL_IMMEDIATE|FL_COMPONLY)};
     *dicttop++ = (DictEntry){"COMPILE-ONLY", SYSWORD(compile_only_w,FL_IMMEDIATE|FL_COMPONLY)};
+    *dicttop++ = (DictEntry){"LOAD", SYSWORD(load_w,FL_INTERONLY)};
 
     /* Memory */
     *dicttop++ = (DictEntry){"HERE", SYSWORD(here_w,0)};
@@ -1257,8 +1283,6 @@ void init_dict() {
     *dicttop++ = (DictEntry){"OPEN", SYSWORD(open_w,0)};
     *dicttop++ = (DictEntry){"TOUCH", SYSWORD(touch_w,0)};
     *dicttop++ = (DictEntry){"TRUNC", SYSWORD(trunc_w,0)};
-    //*dicttop++ = (DictEntry){"F!", SYSWORD(fwb_w,0)};
-    //*dicttop++ = (DictEntry){"F@", SYSWORD(ffetch_w,0)};
     *dicttop++ = (DictEntry){"WRITE", SYSWORD(write_w,0)};
     *dicttop++ = (DictEntry){"READ", SYSWORD(read_w,0)};
     *dicttop++ = (DictEntry){"SEEK", SYSWORD(seek_w,0)};
@@ -1390,6 +1414,20 @@ char *load_file(const char *filepath) {
     return contents;
 }
 
+void eval_file(const char *filename) {
+    char *f = load_file(filename);
+    
+    if (f == NULL) return;
+    
+    line = 0;
+    pointer = expression = f;
+    
+    eval();
+    
+    free(f);
+    pointer = expression = NULL;
+}
+
 #include <signal.h>
 void fpe_handle(int _sig) {
     (void)_sig;
@@ -1407,17 +1445,7 @@ int main(int argc, char **argv) {
     init_dict();
     if (argc > 1) {
         for (int i = 1; i < argc; i++) {
-            char *f = load_file(argv[i]);
-
-            if (f == NULL) continue;
-
-	    line = 0;
-            pointer = expression = f;
-
-            eval();
-
-            free(f);
-            pointer = expression = NULL;
+	    eval_file(argv[i]);
         }
     }
     repl();

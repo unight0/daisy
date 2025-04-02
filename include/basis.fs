@@ -39,10 +39,10 @@
   multiline comment
   Note: multiline comments don't work in REPL.  )
 
-: ." while eb dup '"' != over 0 != and do emit done drop ;
+\ : ." while eb dup '"' != over 0 != and do emit done drop ;
 
 \ Writes a c-string into wordspace
-: " here while eb dup '"' != over 0 != and do ,b done drop 0 ,b ;
+\ : " here while eb dup '"' != over 0 != and do ,b done drop 0 ,b ;
 
 \ Types out a c-string
 : type while dup @b dup 0 != do emit 1 + done drop drop ;
