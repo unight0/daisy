@@ -766,6 +766,19 @@ void doc_w() {
     DOCGUARD(80);
 }
 
+void docmem_w() {
+    DOCGUARD(80);
+
+    printf("Daisy FORTH kernel is similar to its memory management to other FORTHs.\n");
+    printf("There is one large preallocated fixed-size(will be made extensible \nin the future updates) memory space.\n");
+    printf("This memory space is called wordspace.\n");
+    printf("The kernel uses it automatically to store newly-defined words.\n");
+    printf("However, when the user needs to allocate memory, the same wordspace is used.\n");
+    printf("Therefore be careful with anything that involves RESERVING memory\nwhile compiling a word because it may write your data into the body of the word!\n");
+    
+    DOCGUARD(80);
+}
+
 // A B -- B A
 void swap_w(void) {
     if(ASKSTACK(2)) return;
@@ -1492,7 +1505,50 @@ const char *doc_seek =
     "(fd offs -- fd)\n"
     "Moves the position pointer of FD to OFFS; preserves FD\n";
 
+const char *doc_fetch =
+    "(addr -- value)\n"
+    "Reads a cell from memory pointed by ADDR.\n"
+    "Note: use @b to fetch a byte.\n";
 
+const char *doc_wr =
+    "(val addr -- )\n"
+    "Writes a cell with value VAL to memory pointed by ADDR.\n"
+    "Note: use !b to write a byte.\n";
+
+const char *doc_bfetch =
+    "(addr -- val)\n"
+    "Reads a byte from memory pointed by ADDR.\n"
+    "Note: use ! to write a cell.\n";
+
+const char *doc_bwr =
+    "(val addr -- )\n"
+    "Writes a byte with value VAL to memory pointed by ADDR.\n"
+    "Note: use @ to read a cell.\n";
+
+const char *doc_state =
+    "(-- addr)\n"
+    "Returns the addr of the byte that controls the system state.\n"
+    "Write 0 to change to interpretation mode, write 1 to change to compile mode.\n";
+
+const char *doc_cells =
+    "(n -- a)\n"
+    "Puts how many bytes N cells would occupy in memory onto stack.\n";
+
+const char *doc_here =
+    "(-- addr)\n"
+    "Puts the addr of the current end of the wordspace onto stack.\n"
+    "For clarifications about the FORTH memory model use `doc-memory`\n";
+
+const char *doc_reserve =
+    "(n -- )\n"
+    "Reserves N bytes at the end of wordspace.\n"
+    "Use negative value to unreserve.\n"
+    "However, be careful when using RESERVE in compile mode because new words are \nwritten into the same memory space!\n"
+    "For clarifications about the FORTH memory model use `doc-memory`\n";
+
+const char *doc_docmem =
+    "(--)\n"
+    "Show clarifications about the FORTH memory model.\n";
 
 // Dictionary initialization
 void init_dict() {
@@ -1510,6 +1566,7 @@ void init_dict() {
     *dicttop++ = (DictEntry){"COMPILE-ONLY", SYSWORD(compile_only_w,FL_IMMEDIATE|FL_COMPONLY,doc_componly)};
     *dicttop++ = (DictEntry){"LOAD", SYSWORD(load_w,FL_INTERONLY,doc_load)};
     *dicttop++ = (DictEntry){"DOC", SYSWORD(doc_w,FL_INTERONLY,doc_doc)};
+    *dicttop++ = (DictEntry){"DOC-MEMORY", SYSWORD(docmem_w,FL_INTERONLY,doc_docmem)};
 
     /* Memory */
     //TODO: documentation + doc-memory, because the memory system of forth
@@ -1517,14 +1574,14 @@ void init_dict() {
     //Moreover, allow strings to be LIT'd (or make up LITSTR), because we want
     //to be able to do this:
     //: hi "hello, world!" type ;
-    *dicttop++ = (DictEntry){"HERE", SYSWORD(here_w,0,NULL)};
-    *dicttop++ = (DictEntry){"STATE", SYSWORD(state_w,0,NULL)};
-    *dicttop++ = (DictEntry){"@B", SYSWORD(bfetch_w,0,NULL)};
-    *dicttop++ = (DictEntry){"!B", SYSWORD(bwr_w,0,NULL)};
-    *dicttop++ = (DictEntry){"@", SYSWORD(fetch_w,0,NULL)};
-    *dicttop++ = (DictEntry){"!", SYSWORD(wr_w,0,NULL)};
-    *dicttop++ = (DictEntry){"RESERVE", SYSWORD(reserve_w,0,NULL)};
-    *dicttop++ = (DictEntry){"CELLS", SYSWORD(cells_w,0,NULL)};
+    *dicttop++ = (DictEntry){"STATE", SYSWORD(state_w,0,doc_state)};
+    *dicttop++ = (DictEntry){"@B", SYSWORD(bfetch_w,0,doc_bfetch)};
+    *dicttop++ = (DictEntry){"!B", SYSWORD(bwr_w,0,doc_bwr)};
+    *dicttop++ = (DictEntry){"@", SYSWORD(fetch_w,0,doc_fetch)};
+    *dicttop++ = (DictEntry){"!", SYSWORD(wr_w,0,doc_wr)};
+    *dicttop++ = (DictEntry){"HERE", SYSWORD(here_w,0,doc_here)};
+    *dicttop++ = (DictEntry){"RESERVE", SYSWORD(reserve_w,0,doc_reserve)};
+    *dicttop++ = (DictEntry){"CELLS", SYSWORD(cells_w,0,doc_cells)};
 
     /* File management */
     //*dicttop++ = (DictEntry){"READFILE", SYSWORD(readfile_w,0,NULL)};
