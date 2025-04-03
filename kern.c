@@ -25,6 +25,8 @@ typedef union {
 struct Word {
     char flags;
     Cell *end;
+    // Documentation
+    const char *docstring;
     //char signature;
     union {
         Cell *body;
@@ -39,7 +41,7 @@ enum {
     FL_PREDEFINED = (1<<3),
 };
 
-#define SYSWORD(s,fl) (Word){FL_PREDEFINED|(fl),0,.sw=(s)}
+#define SYSWORD(s,fl,dc) (Word){FL_PREDEFINED|(fl),NULL,(dc),.sw=(s)}
 
 // A phony word for compiling numbers
 void lit_w() {}
@@ -71,6 +73,8 @@ DictEntry dict[DICT_SIZE] = {0}, *dicttop = dict, *userwords = dict;
 char wordspace[WSBLOCK_SIZE] = {0}, *wspacend = wordspace;
 //char *wordspace, *wspacend;
 
+// For error display
+int repl_expression = 0;
 // Expression that is processed at the moment
 char *expression = NULL;
 // Pointer to a char in expression
@@ -88,14 +92,28 @@ Cell *absjump = 0;
 char *lastword = NULL;
 
 size_t line = 0;
+char *line_begin, *prev_line_begin = NULL;
 // Display err instead of ok
 int error_happened = 0;
 // Error reporitng
 #define error(cs, ...){							\
 	error_happened = 1;						\
-	fprintf(stderr, "\033[m\033[1mAt %lu:%lu, '%s': ", line, pointer-expression, lastword); \
-	fprintf(stderr, cs, ##__VA_ARGS__);				\
-	fprintf(stderr, "\033[m");}					\
+	if (!repl_expression) {						\
+	    fprintf(stderr, "\033[m\033[1mAt %lu:%ld, '%s': ", line, line_begin-prev_line_begin-1, lastword); \
+	    for(char *p = prev_line_begin; p < line_begin; p++)		\
+		if (*p) fputc(*p, stderr);				\
+		else fputc(' ', stderr);				\
+	    fputc('\n', stderr);					\
+	    fprintf(stderr, "%*c^", (int)(lastword-prev_line_begin-1), ' '); \
+	    fprintf(stderr, cs, ##__VA_ARGS__);				\
+	    fprintf(stderr, "\033[m");					\
+	}								\
+	else {								\
+	    fprintf(stderr, "\033[m\033[1m--> At '%s': ", lastword);	\
+	    fprintf(stderr, cs, ##__VA_ARGS__);				\
+	    fprintf(stderr, "\033[m");					\
+	}								\
+}
 
 // Report insufficient arguments
 void ins_arguments(const char *who, size_t req, size_t got) {
@@ -518,13 +536,13 @@ void words_w() {
     printf("(total %lu/%d)\n", dicttop-dict, DICT_SIZE);
 }
 
-void putflags(char *word, Word *w) {
+void putflags(Word *w) {
     if (!w->flags) {
-        printf("'%s' = 0 --> no flags\n", word);
+        printf("No flags\n");
         return;
     }
 
-    printf("'%s' = %d:\n", word, w->flags);
+    //printf("'%s' = %d:\n", word, w->flags);
 
     if (w->flags & FL_PREDEFINED)
         printf("PREDEFINED\n");
@@ -553,7 +571,7 @@ void flags_w() {
         return;
     }
 
-    putflags(word, w);
+    putflags(w);
 }
 
 // Adds entry if not present
@@ -591,7 +609,7 @@ Word *find_word(char *word) {
         if(!strcmp(p->name, word)) return &(p->w);
     }
     
-    error("'%s'?\n", word);
+    error("Unknown word '%s'.\n", word);
     return NULL;
 }
 
@@ -705,6 +723,47 @@ void load_w() {
     //printf("Located file for loading: '%s'\n", filename);
 
     eval_file(filename);
+}
+
+// DRY!
+#define DOCGUARD(c) for(int i = 0; i < c; i++) fputc('-', stdout); fputc('\n', stdout);
+// Shows docstring for the word
+void doc_w() {
+    char *word = parse();
+
+    if (word == NULL) {
+	error("No word provided for DOC!\n");
+	return;
+    }
+
+    Word *w = find_word(word);
+
+    if (w == NULL) {
+	error("Cannot show documentation for a non-existent word!\n");
+	return;
+    }
+    
+    DOCGUARD(80);
+    
+    if (w->docstring == NULL) {
+	printf("No documentation available\n");
+	DOCGUARD(80);
+	return;
+    }
+
+    if (!*w->docstring) {
+	printf("Documentation is empty\n");
+	DOCGUARD(80);
+	return;
+    }
+
+    printf("DOCUMENTATION FOR '%s'\n", word);
+
+    putflags(w);
+    
+    printf("\n%s", w->docstring);
+    
+    DOCGUARD(80);
 }
 
 // A B -- B A
@@ -873,7 +932,11 @@ char *parse() {
     if (!*pointer) return NULL;
 
     // Skip spaces
-    for(;isspace(*pointer);++pointer) if (*pointer == '\n') line++;
+    for(;isspace(*pointer);++pointer) if (*pointer == '\n') {
+	    prev_line_begin = line_begin;
+	    line_begin = pointer;
+	    line++;
+	}
     
     // Remember last word processed for errors
     char *word = lastword = pointer;
@@ -890,9 +953,15 @@ char *parse() {
 	}
 	pointer++;
     }
+    // Anything else
     else {
 	// Skip until next space
 	for(;!isspace(*pointer) && *pointer;++pointer);
+	if (*pointer == '\n') {
+	    prev_line_begin = line_begin;
+	    line_begin = pointer;
+	    line++;
+	}
     }
 
     // Put endline
@@ -1147,6 +1216,7 @@ char *load_string_wspace(char *str) {
 void eval() {
    while(1) {
        char *word = parse();
+
        // EOL
        if (word == NULL) break;
        if (*word == 0) break;
@@ -1241,7 +1311,7 @@ void see_w() {
         return;
     }
 
-    putflags(name, w);
+    putflags(w);
 
     if (w->flags & FL_PREDEFINED) {
         printf("<asm>\n");
@@ -1251,99 +1321,279 @@ void see_w() {
     decompile(w);
 }
 
+const char *doc_doc = 
+    "Reads the word name from source ahead.\n"
+    "Attempts to access the docstring of the word.\n"
+    "Displays the docstring; If none found, reports error.\n";
+
+const char *doc_lit = "A phony word for compiling numbers.\n";
+
+const char *doc_exit = "(i -- )\nExit the program with code I.\n";
+
+const char *doc_findword =
+    "(-- word -- wordptr)\n"
+    "Reads WORD from source ahead.\n"
+    "Attempts to find the WORD in the dictionary, puts the WORDPTR onto stack.\n";    
+
+const char *doc_immediate =
+    "Marks the currently compiled word as IMMEDIATE.\n"
+    "IMMEDIATE are executed immediately upon being encountered.\n"
+    "Thus IMMEDIATE words are not compiled.\n"
+    "IMMEDIATE words allow for metaprogramming.\n"
+    "IF and ELSE are implemented as IMMEDIATE words.\n"
+    "IMMEDIATE words work similarly to macros.\n"
+    "Put it inside the body of the word like this:\n"
+    "\t: hi interpretation-only 10 ;\n";    
+
+const char *doc_interonly =
+    "Marks the currently compiled word as interpretation-only.\n"
+    "Works best with asssitant words like DOC.\n"
+    "Put it inside the body of the word like this:\n"
+    "\t: hi interpretation-only 10 ;\n";
+
+const char *doc_componly =
+    "Marks the currently compiled word as compile-only.\n"
+    "Works best with IMMEDIATE words.\n"
+    "Put it inside the body of the word like this:\n"
+    "\t: hi compile-only 10 ;\n";
+
+const char *doc_load =
+    "Reads the filehint from the source ahead.\n"
+    "Attempts to find the file in '.' and in INCLUDE_DIR (if defined).\n"
+    "If the name is provided in \"quotes\", then it will be taken as an absolute filepath.\n";
+
+const char *doc_branch =
+    "(addr -- )\n"
+    "Branch unconditionally to ADDR.\n"
+    "Cannot be used properly by user, used by IF ELSE etc.\n";
+
+const char *doc_zbranch =
+    "(cond addr -- )\n"
+    "Branch to ADDR if cond == 0.\n"
+    "Cannot be used properly by user, used by IF ELSE etc.\n";
+
+const char *doc_colon =
+    "(-- wordname -- )\n"
+    "Scans the name for the new word from source ahead.\n"
+    "Puts the system into compilation mode.\n"
+    "Use it like this:\n"
+    "\t: myword 1 2 3 4 ;\n";
+
+const char *doc_semicolon =
+    "(--)\n"
+    "Finishes the declaration of a new word.\n"
+    "Puts the system into interpretation mode.\n";
+
+const char *doc_eb =
+    "(-- b -- b)\n"
+    "Stands for 'Expression Byte'.\n"
+    "Scans one byte from the source ahead; puts it onto stack.\n"
+    "Example:\n"
+    "\teb c . \\prints 99\n";
+
+const char *doc_see =
+    "(-- word --)\n"
+    "Reads the word name from the source ahead.\n"
+    "Attempts to disassemble the word's contents.\n"
+    "Will not produce informative output with predefined words.\n";
+
+const char *doc_words =
+    "(--)\n"
+    "Displays the defined words and how full the dictionary is.\n";
+
+const char *doc_flags =
+    "(-- word --)\n"
+    "Reads the word name from the source ahead.\n"
+    "Displays flags assigned to the word.\n";
+
+const char *doc_swap =
+    "(a b -- b a)\n";
+
+const char *doc_rot =
+    "(a b c -- b c a)\n";
+
+const char *doc_dup =
+    "(a -- a a)\n";
+
+const char *doc_drop =
+    "(a --)\n";
+
+const char *doc_over =
+    "(a b -- a b a)\n";
+
+const char *doc_arith =
+    "All arithmetic operations (including = xor > etc.) work the same:\n"
+    "(a b -- a[OP]b), where OP -- the operation.\n";
+
+const char *doc_arithf =
+    "This is a float variant of an arithmetic opeeration.\n"
+    "All arithmetic operations (including = xor > etc.) work the same:\n"
+    "\t(a b -- a[OP]b), where OP -- the operation.\n";
+
+const char *doc_dot =
+    "(int -- )\n"
+    "Print an integer. Works like printf(\"%ld\", INT).\n";
+
+const char *doc_dotf = 
+    "(flt -- )\n"
+    "Print a float. Works like printf(\"%f\", FLT).\n";
+
+const char *doc_emit =
+    "(b -- )\n"
+    "Writes one byte to the standard output.\n";
+
+const char *doc_rmfile =
+    "(filename --)\n"
+    "Removes file 'FILENAME'.\n"
+    "Use FILE-EXISTS? to determine if file exists before removing.\n";
+
+const char *doc_open =
+    "(filename -- fd)\n"
+    "Opens file FILENAME, returns file descriptor FD.\n"
+    "Use FILE-EXISTS? to determine if file exists before opening.\n";
+
+const char *doc_close =
+    "(fd -- )\n"
+    "Closes file FD.\n";
+
+const char *doc_filex =
+    "(filename -- b)\n"
+    "Tests if FILENAME exists. Puts 1 on stack if yes, 0 otherwise.\n";
+
+const char *doc_rename =
+    "(oldfilename newfilename --)\n"
+    "Renames OLDFILENAME to NEWFILEname\n";
+
+const char *doc_touch =
+    "(filename --)\n"
+    "Creates a new empty file called FILENAME.\n";
+
+const char *doc_trunc =
+    "(fd size -- fd)\n"
+    "Changes size of file FD to SIZE; preserves FD.\n";
+
+const char *doc_fsize =
+    "(fd -- fd size)\n"
+    "Puts the size of the file FD onto stack; preserves FD.\n";
+
+const char *doc_write =
+    "(fd buf len -- fd)\n"
+    "Writes data from buffer BUF of size LEN to file FD; preserves FD.\n"
+    "Note: Use RESERVE to allocate a buffer, RESERVE with a negative value to deallocate it.\n"
+    "Tip: use FD=1 for writing to stdout, FD=3 for writing to stderr.\n";
+
+const char *doc_read =
+    "(fd buf len -- fd buf)\n"
+    "Reads data from FD to buffer BUF of size LEN; preserves FD and BUF.\n"
+    "Note: Use RESERVE to allocate a buffer, RESERVE with a negative value to deallocate it.\n"
+    "Tip: use FD=0 for reading from stdin.\n";
+
+const char *doc_seek =
+    "(fd offs -- fd)\n"
+    "Moves the position pointer of FD to OFFS; preserves FD\n";
+
+
 
 // Dictionary initialization
 void init_dict() {
     /* Basics */
-    *dicttop++ = (DictEntry){"EXIT", SYSWORD(exit_w,0)};
-    *dicttop++ = (DictEntry){"LIT", SYSWORD(lit_w,FL_IMMEDIATE)};
+    *dicttop++ = (DictEntry){"EXIT", SYSWORD(exit_w,0,doc_exit)};
+    *dicttop++ = (DictEntry){"LIT", SYSWORD(lit_w,FL_IMMEDIATE,doc_lit)};
     lit_word = &(dicttop-1)->w;
-    *dicttop++ = (DictEntry){"BRANCH", SYSWORD(branch_w,FL_COMPONLY)};
-    *dicttop++ = (DictEntry){"0BRANCH", SYSWORD(zbranch_w,FL_COMPONLY)};
-    *dicttop++ = (DictEntry){"'", SYSWORD(findword_w,0)};
-    *dicttop++ = (DictEntry){":", SYSWORD(colon_w,FL_IMMEDIATE|FL_INTERONLY)};
-    *dicttop++ = (DictEntry){";", SYSWORD(scolon_w,FL_IMMEDIATE|FL_COMPONLY)};
-    *dicttop++ = (DictEntry){"IMMEDIATE", SYSWORD(immediate_w,FL_IMMEDIATE|FL_COMPONLY)};
-    *dicttop++ = (DictEntry){"INTERPRETATION-ONLY", SYSWORD(interpretation_only_w,FL_IMMEDIATE|FL_COMPONLY)};
-    *dicttop++ = (DictEntry){"COMPILE-ONLY", SYSWORD(compile_only_w,FL_IMMEDIATE|FL_COMPONLY)};
-    *dicttop++ = (DictEntry){"LOAD", SYSWORD(load_w,FL_INTERONLY)};
+    *dicttop++ = (DictEntry){"BRANCH", SYSWORD(branch_w,FL_COMPONLY,doc_branch)};
+    *dicttop++ = (DictEntry){"0BRANCH", SYSWORD(zbranch_w,FL_COMPONLY,doc_zbranch)};
+    *dicttop++ = (DictEntry){"'", SYSWORD(findword_w,0,doc_findword)};
+    *dicttop++ = (DictEntry){":", SYSWORD(colon_w,FL_IMMEDIATE|FL_INTERONLY,doc_colon)};
+    *dicttop++ = (DictEntry){";", SYSWORD(scolon_w,FL_IMMEDIATE|FL_COMPONLY,doc_semicolon)};
+    *dicttop++ = (DictEntry){"IMMEDIATE", SYSWORD(immediate_w,FL_IMMEDIATE|FL_COMPONLY,doc_immediate)};
+    *dicttop++ = (DictEntry){"INTERPRETATION-ONLY", SYSWORD(interpretation_only_w,FL_IMMEDIATE|FL_COMPONLY,doc_interonly)};
+    *dicttop++ = (DictEntry){"COMPILE-ONLY", SYSWORD(compile_only_w,FL_IMMEDIATE|FL_COMPONLY,doc_componly)};
+    *dicttop++ = (DictEntry){"LOAD", SYSWORD(load_w,FL_INTERONLY,doc_load)};
+    *dicttop++ = (DictEntry){"DOC", SYSWORD(doc_w,FL_INTERONLY,doc_doc)};
 
     /* Memory */
-    *dicttop++ = (DictEntry){"HERE", SYSWORD(here_w,0)};
-    *dicttop++ = (DictEntry){"STATE", SYSWORD(state_w,0)};
-    *dicttop++ = (DictEntry){"@B", SYSWORD(bfetch_w,0)};
-    *dicttop++ = (DictEntry){"!B", SYSWORD(bwr_w,0)};
-    *dicttop++ = (DictEntry){"@", SYSWORD(fetch_w,0)};
-    *dicttop++ = (DictEntry){"!", SYSWORD(wr_w,0)};
-    *dicttop++ = (DictEntry){"RESERVE", SYSWORD(reserve_w,0)};
-    *dicttop++ = (DictEntry){"CELLS", SYSWORD(cells_w,0)};
+    //TODO: documentation + doc-memory, because the memory system of forth
+    //may be confusing at the beginning.
+    //Moreover, allow strings to be LIT'd (or make up LITSTR), because we want
+    //to be able to do this:
+    //: hi "hello, world!" type ;
+    *dicttop++ = (DictEntry){"HERE", SYSWORD(here_w,0,NULL)};
+    *dicttop++ = (DictEntry){"STATE", SYSWORD(state_w,0,NULL)};
+    *dicttop++ = (DictEntry){"@B", SYSWORD(bfetch_w,0,NULL)};
+    *dicttop++ = (DictEntry){"!B", SYSWORD(bwr_w,0,NULL)};
+    *dicttop++ = (DictEntry){"@", SYSWORD(fetch_w,0,NULL)};
+    *dicttop++ = (DictEntry){"!", SYSWORD(wr_w,0,NULL)};
+    *dicttop++ = (DictEntry){"RESERVE", SYSWORD(reserve_w,0,NULL)};
+    *dicttop++ = (DictEntry){"CELLS", SYSWORD(cells_w,0,NULL)};
 
     /* File management */
-    //*dicttop++ = (DictEntry){"READFILE", SYSWORD(readfile_w,0)};
-    *dicttop++ = (DictEntry){"OPEN", SYSWORD(open_w,0)};
-    *dicttop++ = (DictEntry){"TOUCH", SYSWORD(touch_w,0)};
-    *dicttop++ = (DictEntry){"TRUNC", SYSWORD(trunc_w,0)};
-    *dicttop++ = (DictEntry){"WRITE", SYSWORD(write_w,0)};
-    *dicttop++ = (DictEntry){"READ", SYSWORD(read_w,0)};
-    *dicttop++ = (DictEntry){"SEEK", SYSWORD(seek_w,0)};
-    *dicttop++ = (DictEntry){"FILESIZE", SYSWORD(filesize_w,0)};
-    *dicttop++ = (DictEntry){"CLOSE", SYSWORD(close_w,0)};
-    *dicttop++ = (DictEntry){"FILE-EXISTS?", SYSWORD(filee_w,0)};
-    *dicttop++ = (DictEntry){"RENAME", SYSWORD(rename_w,0)};
-    *dicttop++ = (DictEntry){"RMFILE", SYSWORD(rmfile_w,0)};
+    //*dicttop++ = (DictEntry){"READFILE", SYSWORD(readfile_w,0,NULL)};
+    *dicttop++ = (DictEntry){"OPEN", SYSWORD(open_w,0,doc_open)};
+    *dicttop++ = (DictEntry){"TOUCH", SYSWORD(touch_w,0,doc_touch)};
+    *dicttop++ = (DictEntry){"TRUNC", SYSWORD(trunc_w,0,doc_trunc)};
+    *dicttop++ = (DictEntry){"WRITE", SYSWORD(write_w,0,doc_write)};
+    *dicttop++ = (DictEntry){"READ", SYSWORD(read_w,0,doc_read)};
+    *dicttop++ = (DictEntry){"SEEK", SYSWORD(seek_w,0,doc_seek)};
+    *dicttop++ = (DictEntry){"FILESIZE", SYSWORD(filesize_w,0,doc_fsize)};
+    *dicttop++ = (DictEntry){"CLOSE", SYSWORD(close_w,0,doc_close)};
+    *dicttop++ = (DictEntry){"FILE-EXISTS?", SYSWORD(filee_w,0,doc_filex)};
+    *dicttop++ = (DictEntry){"RENAME", SYSWORD(rename_w,0,doc_rename)};
+    *dicttop++ = (DictEntry){"RMFILE", SYSWORD(rmfile_w,0,doc_rmfile)};
 
     // Very efficient, but introduces its own problems that overpower
     // the benefits
-    //*dicttop++ = (DictEntry){"MAPFILE", SYSWORD(mapfile_w,0)};
-    //*dicttop++ = (DictEntry){"UNMAPFILE", SYSWORD(unmapfile_w,0)};
+    //*dicttop++ = (DictEntry){"MAPFILE", SYSWORD(mapfile_w,0,NULL)};
+    //*dicttop++ = (DictEntry){"UNMAPFILE", SYSWORD(unmapfile_w,0,NULL)};
 
     
     /* Reading from expression itself */
     // Receives 1 next byte from expression
-    *dicttop++ = (DictEntry){"EB", SYSWORD(exprbyte_w,0)};
+    *dicttop++ = (DictEntry){"EB", SYSWORD(exprbyte_w,0,doc_eb)};
 
     /* Development */
-    *dicttop++ = (DictEntry){"WORDS", SYSWORD(words_w,0)};
-    *dicttop++ = (DictEntry){"FLAGS", SYSWORD(flags_w,0)};
-    *dicttop++ = (DictEntry){"SEE", SYSWORD(see_w,0)};
+    *dicttop++ = (DictEntry){"WORDS", SYSWORD(words_w,0,doc_words)};
+    *dicttop++ = (DictEntry){"FLAGS", SYSWORD(flags_w,0,doc_flags)};
+    *dicttop++ = (DictEntry){"SEE", SYSWORD(see_w,0,doc_see)};
 
     /* Stack manipulation */
     // TODO: implement PICK
-    *dicttop++ = (DictEntry){"SWAP", SYSWORD(swap_w,0)};
-    *dicttop++ = (DictEntry){"DROP", SYSWORD(drop_w,0)};
-    *dicttop++ = (DictEntry){"DUP", SYSWORD(dup_w,0)};
-    *dicttop++ = (DictEntry){"OVER", SYSWORD(over_w,0)};
-    *dicttop++ = (DictEntry){"ROT", SYSWORD(rot_w,0)};
+    *dicttop++ = (DictEntry){"SWAP", SYSWORD(swap_w,0,doc_swap)};
+    *dicttop++ = (DictEntry){"DROP", SYSWORD(drop_w,0,doc_drop)};
+    *dicttop++ = (DictEntry){"DUP", SYSWORD(dup_w,0,doc_dup)};
+    *dicttop++ = (DictEntry){"OVER", SYSWORD(over_w,0,doc_over)};
+    *dicttop++ = (DictEntry){"ROT", SYSWORD(rot_w,0,doc_rot)};
 
     /* I/O */
     //TODO: emit and . are not primitive enough;
     //Introduce read() and write() and file descriptors and the build . and
     //emit on top of that
-    *dicttop++ = (DictEntry){".", SYSWORD(putint_w,0)};
-    *dicttop++ = (DictEntry){".F", SYSWORD(putflt_w,0)};
-    *dicttop++ = (DictEntry){"EMIT", SYSWORD(emit_w,0)};
+    //NOTE: read() and write() are cool and all, but it will limit the
+    //crossplatformity of the system. But do we even care? That's the question.
+    *dicttop++ = (DictEntry){".", SYSWORD(putint_w,0,doc_dot)};
+    *dicttop++ = (DictEntry){".F", SYSWORD(putflt_w,0,doc_dotf)};
+    *dicttop++ = (DictEntry){"EMIT", SYSWORD(emit_w,0,doc_emit)};
 
 
     /* Logic */
     //TODO: bitwise operations
-    *dicttop++ = (DictEntry){"AND", SYSWORD(and_w,0)};
-    *dicttop++ = (DictEntry){"OR", SYSWORD(or_w,0)};
-    *dicttop++ = (DictEntry){"NOT", SYSWORD(not_w,0)};
-    *dicttop++ = (DictEntry){"XOR", SYSWORD(xor_w,0)};
+    *dicttop++ = (DictEntry){"AND", SYSWORD(and_w,0,doc_arith)};
+    *dicttop++ = (DictEntry){"OR", SYSWORD(or_w,0,doc_arith)};
+    *dicttop++ = (DictEntry){"NOT", SYSWORD(not_w,0,doc_arith)};
+    *dicttop++ = (DictEntry){"XOR", SYSWORD(xor_w,0,doc_arith)};
 
     /* Arithmetics */
-    *dicttop++ = (DictEntry){"=", SYSWORD(equ_w,0)};
-    *dicttop++ = (DictEntry){">", SYSWORD(gre_w,0)};
-    *dicttop++ = (DictEntry){"<", SYSWORD(les_w,0)};
-    *dicttop++ = (DictEntry){"%", SYSWORD(mod_w,0)};
-    *dicttop++ = (DictEntry){"+", SYSWORD(sum_w,0)};
-    *dicttop++ = (DictEntry){"-", SYSWORD(sub_w,0)};
-    *dicttop++ = (DictEntry){"/", SYSWORD(div_w,0)};
-    *dicttop++ = (DictEntry){"*", SYSWORD(mul_w,0)};
-    *dicttop++ = (DictEntry){"+F", SYSWORD(fsum_w,0)};
-    *dicttop++ = (DictEntry){"-F", SYSWORD(fsub_w,0)};
-    *dicttop++ = (DictEntry){"/F", SYSWORD(fdiv_w,0)};
-    *dicttop++ = (DictEntry){"*F", SYSWORD(fmul_w,0)};
+    *dicttop++ = (DictEntry){"=", SYSWORD(equ_w,0,doc_arith)};
+    *dicttop++ = (DictEntry){">", SYSWORD(gre_w,0,doc_arith)};
+    *dicttop++ = (DictEntry){"<", SYSWORD(les_w,0,doc_arith)};
+    *dicttop++ = (DictEntry){"%", SYSWORD(mod_w,0,doc_arith)};
+    *dicttop++ = (DictEntry){"+", SYSWORD(sum_w,0,doc_arith)};
+    *dicttop++ = (DictEntry){"-", SYSWORD(sub_w,0,doc_arith)};
+    *dicttop++ = (DictEntry){"/", SYSWORD(div_w,0,doc_arith)};
+    *dicttop++ = (DictEntry){"*", SYSWORD(mul_w,0,doc_arith)};
+    *dicttop++ = (DictEntry){"+F", SYSWORD(fsum_w,0,doc_arithf)};
+    *dicttop++ = (DictEntry){"-F", SYSWORD(fsub_w,0,doc_arithf)};
+    *dicttop++ = (DictEntry){"/F", SYSWORD(fdiv_w,0,doc_arithf)};
+    *dicttop++ = (DictEntry){"*F", SYSWORD(fmul_w,0,doc_arithf)};
 
     userwords = dicttop;
 }
@@ -1352,10 +1602,24 @@ void init_dict() {
 #include <readline/readline.h>
 #include <readline/history.h>
 
+void greet() {
+    DOCGUARD(80);
+    printf("Welcome to the DAISY FORTH kernel!\n");
+    printf("Type in `words` to view available words.\n");
+    printf("Type in `doc <word>` to access the available documentation about the word.\n");
+    printf("Type in `load basis.fs` to attempt to load the standard library!\n");
+    printf("Press ^C or type in `0 exit` to exit with code 0.\n");
+
+    DOCGUARD(80);
+}
+
 void repl() {
    char *line = NULL;
    //size_t line_sz = 0;
 
+   // Greet user
+   greet();
+   
    // Loop
    while (1) {
        // Read
@@ -1381,6 +1645,7 @@ void repl() {
 
        // Eval
        pointer = expression = line;
+       repl_expression = 1;
        eval();
 
        free(line);
@@ -1420,12 +1685,13 @@ void eval_file(const char *filename) {
     if (f == NULL) return;
     
     line = 0;
-    pointer = expression = f;
+    repl_expression = 0;
+    prev_line_begin = line_begin = pointer = expression = f;
     
     eval();
     
     free(f);
-    pointer = expression = NULL;
+    prev_line_begin = line_begin = pointer = expression = NULL;
 }
 
 #include <signal.h>
@@ -1443,11 +1709,13 @@ int main(int argc, char **argv) {
     //wspacealloc();
     
     init_dict();
+
     if (argc > 1) {
         for (int i = 1; i < argc; i++) {
 	    eval_file(argv[i]);
         }
     }
+    
     repl();
     bye(0);
 }
