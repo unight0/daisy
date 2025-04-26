@@ -77,10 +77,13 @@ cfs variable cfst
 \ TODO(?): maybe create an additional control-flow-stack (C) to put this stuff into?
 \ Would be useful, although it creates a bit of additional complexity
 
+\ NOTE (2): wait wtf this shouldn't be happenning(?)
+\ TODO: check if I'm really compiling this word...
+
 \ ( -- here)
 : { interpretation-only here 1 state !b ;
 \ (here --)
-: } compile-only immediate 0 state !b here over over execute - reserve ;
+: } compile-only immediate 0 state !b here over over - reserve execute  ;
 
 \ Types out a string
 : type while dup @b dup 0 != do emit 1 + done drop drop ;
