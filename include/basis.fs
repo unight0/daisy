@@ -2,6 +2,9 @@
 
 : != = not ;
 
+: 1+ 1 + ;
+: 1- 1 - ;
+
 : cell 1 cells ;
 
 : , here ! cell reserve ;
@@ -12,9 +15,7 @@
 
 : ] 1 state !b ;
 
-: 'lit [ ' lit dup , , ] ;
-
-: ,, 'lit , , ;
+: ,, [ ' lit dup , , ] , , ;
 
 : ['] immediate compile-only ' ,, ;
 
@@ -35,6 +36,26 @@
 
 : ( immediate while eb dup ')' != swap 0 != and do done ;
 
+\ ( A B -- B ) writes cell A to address B preserving B on stack
+: !! dup rot swap ! ;
+
+\ ( A B -- B ) writes byte A to addres B preserving B on stack
+: !!b dup rot swap !b ;
+
+\ : buffer create reserve ;
+
+\ : variable here 1 reserve constant ;
+
+(
+\ v stacktop --
+: >C dup @ 1+ rot swap !! swap ! ;
+
+128 cells buffer cfs
+cfs variable cfst
+10 cfst >C C>
+)
+
+
 ( This is a
   multiline comment
   Note: multiline comments don't work in REPL.  )
@@ -44,8 +65,32 @@
 \ Writes a c-string into wordspace
 \ : " here while eb dup '"' != over 0 != and do ,b done drop 0 ,b ;
 
-\ Types out a c-string
+
+\ Briefly enter compilation mode, execute the
+\ created word, and then delete it
+
+\ SUPER-MEGA-ACHTUNG!!
+\ { places HERE at the top of the stack, and } uses it!
+\ Therefore, the top element on the stack upon executing } should be
+\ the HERE left by the {
+\ If you fail to comply with this, it produces a hardly-debuggable segfault!
+\ TODO(?): maybe create an additional control-flow-stack (C) to put this stuff into?
+\ Would be useful, although it creates a bit of additional complexity
+
+\ ( -- here)
+: { interpretation-only here 1 state !b ;
+\ (here --)
+: } compile-only immediate 0 state !b here over over execute - reserve ;
+
+\ Types out a string
 : type while dup @b dup 0 != do emit 1 + done drop drop ;
+
+\ Measures the length of the string
+: strlen 0 while swap dup @b do 1+ swap 1+ done drop ;
+
+\ ( FD STR -- )
+\ Writes a string to FD
+: writestr dup strlen write ;
 
 \ Idea: :noname ;run syntax. Compiles a noname word, executes it, unreserves memory
 
@@ -53,7 +98,6 @@
 \ dlopen libc.so
 \ 3 1 ffi socket socket dlerr? ...
 \ dlclose
-
 
 : cr 10 emit ;
 
@@ -74,26 +118,5 @@
 : f@ here swap here 0 ,b 1 read swap @b -1 reserve ;
 
 
-: 1+ 1 + ;
-: 1- 1 - ;
-
-\ ( A B -- B ) writes cell A to address B preserving B on stack
-: !! dup rot swap ! ;
-
-\ ( A B -- B ) writes byte A to addres B preserving B on stack
-: !!b dup rot swap !b ;
 
 : [eb] immediate compile-only eb ,, ;
-
-\ Various tests...
-
-: t1 [eb] j . ;
-
-: t2 0 if 99 . 10 emit endif ;
-
-: t3 1 if 100 . 10 emit endif ;
-
-: t4 0 while 1 + dup 10 != do dup . 10 emit done ;
-
-" Hello, world!"
-: t5 [ ,, ] type cr ;

@@ -45,9 +45,12 @@ enum {
 
 // A phony word for compiling numbers
 void lit_w() {}
+// Same but for strings
+//void strlit_w() {}
 
 // Set in init_dict()
 Word *lit_word = NULL;
+//Word *strlit_word = NULL;
 
 #define STACK_SIZE 128
 // Stack && topmost element
@@ -98,7 +101,7 @@ int error_happened = 0;
 // Error reporitng
 #define error(cs, ...){							\
 	error_happened = 1;						\
-	if (!repl_expression) {						\
+	/*if (!repl_expression) {                                           \
 	    fprintf(stderr, "\033[m\033[1mAt %lu:%ld, '%s': ", line, line_begin-prev_line_begin-1, lastword); \
 	    for(char *p = prev_line_begin; p < line_begin; p++)		\
 		if (*p) fputc(*p, stderr);				\
@@ -107,12 +110,12 @@ int error_happened = 0;
 	    fprintf(stderr, "%*c^", (int)(lastword-prev_line_begin-1), ' '); \
 	    fprintf(stderr, cs, ##__VA_ARGS__);				\
 	    fprintf(stderr, "\033[m");					\
-	}								\
-	else {								\
-	    fprintf(stderr, "\033[m\033[1m--> At '%s': ", lastword);	\
+        }*/                                         \
+	/*else {*/                                                      \
+    fprintf(stderr, "\033[m\033[1m--> At %lu, '%s': ", line+1, lastword);	\
 	    fprintf(stderr, cs, ##__VA_ARGS__);				\
 	    fprintf(stderr, "\033[m");					\
-	}								\
+        /*}*/                                       \
 }
 
 // Report insufficient arguments
@@ -267,6 +270,7 @@ void bfetch_w() {
 
     char *ptr = (char*)stacktop--->p;
 
+
     (++stacktop)->i = *ptr;
 }
 
@@ -276,6 +280,7 @@ void bwr_w() {
 
     char *addr = stacktop--->p;
     char byte = (char)stacktop--->i;
+
 
     *addr = byte;
 }
@@ -287,6 +292,7 @@ void fetch_w() {
 
     Cell *ptr = (Cell*)stacktop--->p;
 
+
     *++stacktop = *ptr;
 }
 
@@ -296,6 +302,7 @@ void wr_w() {
 
     Cell *addr = stacktop--->p;
     Cell c = *stacktop--;
+
 
     *addr = c;
 }
@@ -310,11 +317,17 @@ void reserve_w() {
     wspacend += bytes;
 
     if (wspacend < wordspace) {
-	error("Bottom break: wspacend < wordspace.\n\
-Too many bytes have been unreserved.\n\
-Attempting a fix...\n");
-	wspacend = wordspace;
+		error("Bottom break: wspacend < wordspace.\n"
+			  "Too many bytes have been unreserved.\n"
+			  "Resetting memory...\n");
+		wspacend = wordspace;
     }
+
+	if (wspacend >= wordspace+WSBLOCK_SIZE) {
+		error("Top break: wspacend > wordspace+WSBLOCK_SIZE\n"
+			  "To many bytes have been reserved\n"
+			  "Resetting memory...");
+	}
 }
 
 // Pushes the amount of bytes occupied by N cells
@@ -507,6 +520,16 @@ void filee_w() {
     (++stacktop)->u = !access(filename, F_OK);
 }
 
+void dumpstack_w() {
+    printf("\nSTACK DUMP\n");
+    for (Cell *p = stacktop; p > stack; p--) {
+        printf("%ld : %p : %s", p->i, p->p, p->s);
+        if (p->p == wspacend) printf("=HERE");
+        putchar('\n');
+    }
+    exit(0);
+}
+
 void putint_w() {
     if (ASKSTACK(1)) return;
     printf("%ld", stacktop--->i);
@@ -639,15 +662,37 @@ void colon_w() {
 }
 
 void scolon_w() {
-    // Finish the word declaration
-    // NOTE: careful! potential write at NULL
-    find_word(comptarget)->end = (Cell*)wspacend;
-    wspacend++;
+    Word *w = find_word(comptarget);
 
     comptarget = NULL;
+    
+    if (w == NULL) {
+	error("Cannot assign a body to a non-existent word!\n");
+	comptarget = NULL;
+    }
+    
+    // Finish the word declaration    
+    w->end = (Cell*)wspacend;
+    wspacend++;
 
+
+    if (error_happened) {
+	error("A compilation error happened -- abandoning the word\n");
+	dicttop--;
+    }
+    
     // Back into interpretation mode
     state = 0;
+}
+
+void execute_raw(Cell *begin, Cell *end);
+void execute_w() {
+    if(ASKSTACK(2)) return;
+
+    Cell *end = (Cell*)stacktop--->p;
+    Cell *begin = (Cell*)stacktop--->p;
+
+    execute_raw(begin, end);
 }
 
 //TODO: these flag-words should be put AFTER the word,
@@ -716,7 +761,7 @@ void load_w() {
     char *filename = find_by_filehint(filehint);
 
     if (filename == NULL) {
-	error("Could not understand filehint!\n");
+	error("Could not find file using filehint '%s'!\n", filehint);
 	return;
     }
     
@@ -775,6 +820,11 @@ void docmem_w() {
     printf("The kernel uses it automatically to store newly-defined words.\n");
     printf("However, when the user needs to allocate memory, the same wordspace is used.\n");
     printf("Therefore be careful with anything that involves RESERVING memory\nwhile compiling a word because it may write your data into the body of the word!\n");
+    printf("+----------------------------------------------------------+\n");
+    printf("|WORD1|WORD2|USER DATA|WORD3|USER DATA|                    |\n");
+    printf("+----------------------------------------------------------+\n");
+    printf("                                       ^ \n");
+    printf("                                    HERE \n");
     
     DOCGUARD(80);
 }
@@ -923,7 +973,7 @@ void not_w(void) {
 void ok() {
     if(error_happened) {
         error_happened = 0;
-        printf("\033[1merr\033[m\n");
+        printf("\033[31;1merr\033[m\n");
         return;
     }
     const size_t stack_sz = (stacktop-stack);
@@ -933,9 +983,9 @@ void ok() {
     if (state) cm = "(c)";
 
     if (stack_sz)
-        printf("\033[1m%sok %lu\033[m\n", cm, stack_sz);
+        printf("\033[32;1m%sok %lu\033[m\n", cm, stack_sz);
     else
-        printf("\033[1m%sok\033[m\n", cm);
+        printf("\033[32;1m%sok\033[m\n", cm);
 }
 
 char *parse() {
@@ -1020,7 +1070,7 @@ char identify(char* word) {
     }
 
     // Invalid numbers
-    if (signcount > 1) return 0;
+    if (signcount > 1 || signcount == cc) return 0;
     if (dotcount > 1) return 0;
     if (dotcount == cc) return 0;
 
@@ -1065,11 +1115,23 @@ void compile_number(char *word, char numericity) {
     wspacend += sizeof(Cell);
 }
 
+/*char *load_string_wspace(char *str);
+void compile_string(char *str) {
+    // STRLIT
+    *(Cell*)wspacend = (Cell){.w=strlit_word};
+    wspacend += sizeof(Cell);
+
+    load_string_wspace(str);
+    }*/
+
 // Execute a thing from a userword
 void execute(Word *w);
 void execute_thing(Cell c) {
     static int is_cell = 0;
 
+	//printf("ET{\n");
+
+	//printf(">cell\n");
     if (is_cell) {
         is_cell = 0;
         // Ensure cat there is no stack overflow
@@ -1081,17 +1143,56 @@ void execute_thing(Cell c) {
 
     // System word
     if (c.w->flags & FL_PREDEFINED) {
-        // A phony pointer signals that the next Cell is data 
+        // A phony pointer signals that the next Cell is data
+		//printf(">predefined\n");
         if (c.w->sw == lit_w) is_cell = 1;
         else c.w->sw();
         return;
     }
 
+	//printf(">userword\n");
     // Userword
     // Note: recursive
     // TODO: rewrite non-recursively (?)
-    execute(c.w); 
+    execute(c.w);
+
+	//printf("}\n");
+    return;
 }
+
+void decompile(Cell *begin, Cell *end);
+void execute_raw(Cell *begin, Cell *end) {
+    //printf("E::\n");
+    //decompile(begin, end);
+    Cell *t;
+    for (t = begin; t < end; t++) {
+		if (error_happened) {
+			error("An error occured during execution -- stopping\n");
+			break;
+		}
+        
+		//printf("Executing at %p\n", (void*)t);
+        execute_thing(*t);
+		//printf("t++=%p\n", (void*)(t+1));
+	
+        if (need_jump) {
+			//printf("-- Received need_jump to %p\n", (void*)absjump);
+			//if (absjump == end) printf("-- This is the end\n");
+			need_jump = 0;
+			if (absjump < begin || absjump > end) {
+				error("Jump outside of body: %p\n", (void*)absjump);
+				break;
+			}
+			
+			t = absjump;
+			
+			// Allow programs to branch to end and thus end execution
+			t--;
+			continue;
+        }
+    }
+}
+
 
 // Interpretation
 void execute(Word *w) {
@@ -1107,27 +1208,8 @@ void execute(Word *w) {
         return;
     }
 
-    Cell *t;
-    for (t = w->body; t < w->end; t++) {
-	//printf("Executing at %p\n", (void*)t);
-        execute_thing(*t);
-	
-        if (need_jump) {
-	    //printf("-- Received need_jump to %p\n", (void*)absjump);
-	    //if (absjump == w->end) printf("-- This is the w->end\n");
-	    need_jump = 0;
-	    if (absjump < w->body || absjump > w->end) {
-                error("Jump outside of body: %p\n", (void*)absjump);
-                break;
-            }
+    execute_raw(w->body, w->end);
 
-            t = absjump;
-
-	    // Allow programs to branch to w->end and thus end execution
-	    t--;
-            continue;
-        }
-    }
     //printf("Ended execution at %p\n", (void*)t);
 }
 
@@ -1151,14 +1233,6 @@ void push_number(char *word, char numericity) {
 }
 
 
-// Types of words:
-// normal
-// immediate
-// compile-only
-// runtime-only
-// immediate, compile-only
-// immediate, runtime-only (doesn't really exist)
-// runtime-only, compile-only (invalid)
 int flagcheck(Word *w) {
     // Invalid word
     if (w->flags & FL_INTERONLY & FL_COMPONLY) {
@@ -1192,42 +1266,45 @@ char *load_string_wspace(char *str) {
 
     int escape = 0;
     for (char *p = str; *p && p < (str+strlen(str)); ++p) {
-	if (*p == '\\' && !escape) {
-	    escape = 1;
-	    continue;
-	}
-
-	if (!escape) {
-	    *wspacend++ = *p;
-	    continue;
-	}
+		if (*p == '\\' && !escape) {
+			escape = 1;
+			continue;
+		}
+		
+		if (!escape) {
+			*wspacend++ = *p;
+			continue;
+		}
 	
-	// Escaped characters below
-	escape = 0;
+		// Escaped characters below
+		escape = 0;
 
-	if (*p == '\\') {
-	    *wspacend++ = '\\';
-	}
-	else if (*p == 'n') {
-	    *wspacend++ = '\n';
-	}
-	else if (*p == 't') {
-	    *wspacend++ = '\t';
-	}
-	else if (*p == '"') {
-	    *wspacend++ = '"';
-	}
+		if (*p == '\\') {
+			*wspacend++ = '\\';
+		}
+		else if (*p == 'n') {
+			*wspacend++ = '\n';
+		}
+		else if (*p == 't') {
+			*wspacend++ = '\t';
+		}
+		else if (*p == '"') {
+			*wspacend++ = '"';
+		}
     }
     // Finish the c-string
     *wspacend++ = 0;
-
-    //printf("Loaded into wspace: '%s'", begin);
 
     return begin;
 }
 
 void eval() {
    while(1) {
+       if (error_happened) {
+           error("Aborting evaluation\n");
+           break;
+       }
+       
        char *word = parse();
 
        // EOL
@@ -1239,14 +1316,18 @@ void eval() {
 
        // String
        if (type == 4) {
-	   // Cut the '"' off
-	   word++;
-	   word[strlen(word)-1] = 0;
+		   // Cut the '"' off
+		   word++;
+		   word[strlen(word)-1] = 0;
+		   
+		   if (state) {
+			   error("Cannot compile a string into a word -- not yet supported!\n");
+			   continue;
+		   }
 
-	   // Load into wspace, put pointer onto stack
-	   (++stacktop)->p = load_string_wspace(word);
+	       (++stacktop)->p = load_string_wspace(word);
 
-	   continue;
+		   continue;
        }
        
        // Numbers are just pushed to stack
@@ -1282,11 +1363,11 @@ const char *reverse_search(Word *w) {
 
 // Displays the word definition
 // TODO: implement in userspace
-void decompile(Word *w) {
+void decompile(Cell *begin, Cell *end) {
     int last_lit = 0;
     //printf("WORD SIZE: %lu\n", w->end-w->body);
 
-    for (Cell *p = w->body; p < w->end; p++) {
+    for (Cell *p = begin; p < end; p++) {
 
         const char *name = reverse_search(p->w);
 
@@ -1331,7 +1412,7 @@ void see_w() {
         return;
     }
 
-    decompile(w);
+    decompile(w->body, w->end);
 }
 
 const char *doc_doc = 
@@ -1402,7 +1483,7 @@ const char *doc_eb =
     "Stands for 'Expression Byte'.\n"
     "Scans one byte from the source ahead; puts it onto stack.\n"
     "Example:\n"
-    "\teb c . \\prints 99\n";
+    "\teb c . \\ prints 99\n";
 
 const char *doc_see =
     "(-- word --)\n"
@@ -1550,23 +1631,32 @@ const char *doc_docmem =
     "(--)\n"
     "Show clarifications about the FORTH memory model.\n";
 
+const char *doc_execute =
+    "(begin end --)\n"
+    "Executes a set of instructions from BEGIN to END.\n"
+    "Use this if you want to execute an anonymous word.\n";
+
 // Dictionary initialization
 void init_dict() {
     /* Basics */
     *dicttop++ = (DictEntry){"EXIT", SYSWORD(exit_w,0,doc_exit)};
     *dicttop++ = (DictEntry){"LIT", SYSWORD(lit_w,FL_IMMEDIATE,doc_lit)};
     lit_word = &(dicttop-1)->w;
+    /**dicttop++ = (DictEntry){"STRLIT", SYSWORD(strlit_w,FL_IMMEDIATE,NULL)};
+    strlit_word = &(dicttop-1)->w;*/
     *dicttop++ = (DictEntry){"BRANCH", SYSWORD(branch_w,FL_COMPONLY,doc_branch)};
     *dicttop++ = (DictEntry){"0BRANCH", SYSWORD(zbranch_w,FL_COMPONLY,doc_zbranch)};
     *dicttop++ = (DictEntry){"'", SYSWORD(findword_w,0,doc_findword)};
     *dicttop++ = (DictEntry){":", SYSWORD(colon_w,FL_IMMEDIATE|FL_INTERONLY,doc_colon)};
     *dicttop++ = (DictEntry){";", SYSWORD(scolon_w,FL_IMMEDIATE|FL_COMPONLY,doc_semicolon)};
+    *dicttop++ = (DictEntry){"EXECUTE", SYSWORD(execute_w,0,doc_execute)};
     *dicttop++ = (DictEntry){"IMMEDIATE", SYSWORD(immediate_w,FL_IMMEDIATE|FL_COMPONLY,doc_immediate)};
     *dicttop++ = (DictEntry){"INTERPRETATION-ONLY", SYSWORD(interpretation_only_w,FL_IMMEDIATE|FL_COMPONLY,doc_interonly)};
     *dicttop++ = (DictEntry){"COMPILE-ONLY", SYSWORD(compile_only_w,FL_IMMEDIATE|FL_COMPONLY,doc_componly)};
     *dicttop++ = (DictEntry){"LOAD", SYSWORD(load_w,FL_INTERONLY,doc_load)};
     *dicttop++ = (DictEntry){"DOC", SYSWORD(doc_w,FL_INTERONLY,doc_doc)};
     *dicttop++ = (DictEntry){"DOC-MEMORY", SYSWORD(docmem_w,FL_INTERONLY,doc_docmem)};
+    *dicttop++ = (DictEntry){"DUMPSTACK", SYSWORD(dumpstack_w,0,"")};
 
     /* Memory */
     //TODO: documentation + doc-memory, because the memory system of forth
@@ -1584,7 +1674,8 @@ void init_dict() {
     *dicttop++ = (DictEntry){"CELLS", SYSWORD(cells_w,0,doc_cells)};
 
     /* File management */
-    //*dicttop++ = (DictEntry){"READFILE", SYSWORD(readfile_w,0,NULL)};
+    ///dicttop++ = (DictEntry){"READFILE", SYSWORD(readfile_w,0,NULL)};
+    //   #ifdef EXTENSION_FILESYS
     *dicttop++ = (DictEntry){"OPEN", SYSWORD(open_w,0,doc_open)};
     *dicttop++ = (DictEntry){"TOUCH", SYSWORD(touch_w,0,doc_touch)};
     *dicttop++ = (DictEntry){"TRUNC", SYSWORD(trunc_w,0,doc_trunc)};
@@ -1596,6 +1687,7 @@ void init_dict() {
     *dicttop++ = (DictEntry){"FILE-EXISTS?", SYSWORD(filee_w,0,doc_filex)};
     *dicttop++ = (DictEntry){"RENAME", SYSWORD(rename_w,0,doc_rename)};
     *dicttop++ = (DictEntry){"RMFILE", SYSWORD(rmfile_w,0,doc_rmfile)};
+    //#endif
 
     // Very efficient, but introduces its own problems that overpower
     // the benefits
@@ -1655,19 +1747,23 @@ void init_dict() {
     userwords = dicttop;
 }
 
+#define VERSION "0.5"
 
 #include <readline/readline.h>
 #include <readline/history.h>
 
 void greet() {
-    DOCGUARD(80);
-    printf("Welcome to the DAISY FORTH kernel!\n");
+    
+    printf("Daisy forth kernel v"VERSION"\n");
+    printf("Memory %ldKB\n", WSBLOCK_SIZE/1024);
+    /*DOCGUARD(80);
+
     printf("Type in `words` to view available words.\n");
     printf("Type in `doc <word>` to access the available documentation about the word.\n");
-    printf("Type in `load basis.fs` to attempt to load the standard library!\n");
+    printf("Type in `load basis.fs` to load the standard library.\n");
     printf("Press ^C or type in `0 exit` to exit with code 0.\n");
 
-    DOCGUARD(80);
+    DOCGUARD(80);*/
 }
 
 void repl() {
@@ -1680,8 +1776,7 @@ void repl() {
    // Loop
    while (1) {
        // Read
-       //prompt();
-       printf("\033[3m");
+       //printf("\033[3m");
        //getline(&line, &line_sz, stdin);
        line = readline(NULL);
 
@@ -1700,8 +1795,11 @@ void repl() {
            exit(1);
        }
 
+
+	   printf("1/P:%p,E:%s\n", pointer, expression);
        // Eval
        pointer = expression = line;
+	   printf("2/P:%p,E:%s\n", pointer, expression);
        repl_expression = 1;
        eval();
 
@@ -1740,15 +1838,18 @@ void eval_file(const char *filename) {
     char *f = load_file(filename);
     
     if (f == NULL) return;
+
+    int sline = line;
+    char *splb = prev_line_begin, *slb = line_begin, *sp = pointer, *se = expression;
     
     line = 0;
-    repl_expression = 0;
     prev_line_begin = line_begin = pointer = expression = f;
     
     eval();
     
     free(f);
-    prev_line_begin = line_begin = pointer = expression = NULL;
+    //prev_line_begin = line_begin = pointer = expression = NULL;
+	line = sline, prev_line_begin = splb, line_begin = slb, pointer = sp, expression = se;
 }
 
 #include <signal.h>
@@ -1756,7 +1857,7 @@ void fpe_handle(int _sig) {
     (void)_sig;
     // NOTE: if this happens, we need to introduce a check into one of the words
     // that involves division
-    error("Uncaught FPE\n");
+    error("uncaught FPE\n");
     exit(1);
 }
 
@@ -1769,7 +1870,7 @@ int main(int argc, char **argv) {
 
     if (argc > 1) {
         for (int i = 1; i < argc; i++) {
-	    eval_file(argv[i]);
+	        eval_file(argv[i]);
         }
     }
     

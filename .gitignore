@@ -2,3 +2,5 @@
 kern
 *.tst.*
 .gitignore
+bin/
+vgcore*
