@@ -1,33 +1,26 @@
 load basis.fs
 
-\ "hello\n"
-\ { [ swap ,, ] type }
-
-
 "Error: file already exists!"
 "hello"
 { 
-  [ swap ,, ] dup file-exists? if
+  file-exists? if
   \ error
-  [ rot ,, ] 2 swap writestr
+  2 swap writestr
   newline f!
   drop
   1 exit endif
+  drop
 }
 
 ( {
-  "Error: file already exists!" dup file-exists? if
+  "hello" file-exists? if
   \ error
-  "hello" 2 swap writestr
+  "Error: file already exists!" 2 swap writestr
   newline f!
   drop
   1 exit endif
 } )
 
-
-\ "error" HERE "hello"
-
-\ drop drop
 
 "hello" touch
 
@@ -42,4 +35,4 @@ load basis.fs
 close
 
 1 "this is a test" 14 write cr drop
-bye
+\ bye

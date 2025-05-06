@@ -1,4 +1,5 @@
 : bye 0 exit ;
+: abort 1 exit ;
 
 : != = not ;
 
@@ -74,14 +75,14 @@ cfs variable cfst
 \ Therefore, the top element on the stack upon executing } should be
 \ the HERE left by the {
 \ If you fail to comply with this, it produces a hardly-debuggable segfault!
-\ TODO(?): maybe create an additional control-flow-stack (C) to put this stuff into?
-\ Would be useful, although it creates a bit of additional complexity
-
-\ NOTE (2): wait wtf this shouldn't be happenning(?)
-\ TODO: check if I'm really compiling this word...
+\ Be careful with custom IMMEDIATE words!
 
 \ ( -- here)
 : { interpretation-only here 1 state !b ;
+\ We are unreserving memory before we execute its contents,
+\ but it is okay because we are only running one thread.
+\ Additionally, when (or IF) we implement a multithreading model,
+\ It will be designed in such a way that this wouldn't be an issue.
 \ (here --)
 : } compile-only immediate 0 state !b here over over - reserve execute  ;
 
@@ -113,6 +114,7 @@ cfs variable cfst
 : wronly 1 0 ;
 : rdwr 1 1 ;
 
+\ (fd b -- fd)
 : f! here swap ,b 1 write -1 reserve ;
 \ Temporairly allocate a buffer of 1 byte,
 \ Read into it,
@@ -120,6 +122,8 @@ cfs variable cfst
 \ Unreserve the buffer
 : f@ here swap here 0 ,b 1 read swap @b -1 reserve ;
 
-
-
 : [eb] immediate compile-only eb ,, ;
+
+\ Memory usage and memory left utilities
+: memusage here base - . 'B' emit newline emit ;
+: memleft tip here - . 'B' emit newline emit ;
