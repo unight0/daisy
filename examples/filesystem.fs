@@ -1,25 +1,13 @@
 load basis.fs
 
-"Error: file already exists!"
-"hello"
-{ 
-  file-exists? if
-  \ error
-  2 swap writestr
-  newline f!
-  drop
-  1 exit endif
-  drop
-}
-
-( {
+{
   "hello" file-exists? if
   \ error
   "Error: file already exists!" 2 swap writestr
   newline f!
   drop
   1 exit endif
-} )
+}
 
 
 "hello" touch

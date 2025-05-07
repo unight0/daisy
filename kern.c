@@ -58,11 +58,11 @@ enum {
 // A phony word for compiling numbers
 void lit_w() {}
 // Same but for strings
-//void strlit_w() {}
+void strlit_w() {}
 
 // Set in init_dict()
 Word *lit_word = NULL;
-//Word *strlit_word = NULL;
+Word *strlit_word = NULL;
 
 #define STACK_SIZE 128
 // Stack && topmost element
@@ -72,6 +72,8 @@ Cell stack[STACK_SIZE], *stacktop = stack;
 char *comptarget = NULL;
 
 // Dictionary entries point to the wordspace areas (apart from predefined words)
+// TODO: change to a linked list and store in wordspace
+// The last element in the dictionary is the first in the linked list
 #define DICT_SIZE 256
 typedef struct { char *name; Word w; } DictEntry;
 //NOTE: DictEntry *userwords is not yet used
@@ -86,7 +88,6 @@ DictEntry dict[DICT_SIZE] = {0}, *dicttop = dict, *userwords = dict;
 // WSBLOCKS_SIZE = size of one word space memory block
 #define WSBLOCK_SIZE sizeof(Word)*DICT_SIZE*2
 char wordspace[WSBLOCK_SIZE] = {0}, *wspacend = wordspace;
-//char *wordspace, *wspacend;
 
 // For error display
 int repl_expression = 0;
@@ -701,8 +702,8 @@ void scolon_w() {
 
 
     if (error_happened) {
-    error("A compilation error happened -- abandoning the word\n");
-    dicttop--;
+        error("A compilation error happened -- abandoning the word\n");
+        dicttop--;
     }
     
     // Back into interpretation mode
@@ -844,6 +845,7 @@ void docmem_w() {
     printf("The kernel uses it automatically to store newly-defined words.\n");
     printf("However, when the user needs to allocate memory, the same wordspace is used.\n");
     printf("Therefore be careful with anything that involves RESERVING memory\nwhile compiling a word because it may write your data into the body of the word!\n");
+    printf("===WORDSPACE===\n");
     printf("+----------------------------------------------------------+\n");
     printf("|WORD1|WORD2|USER DATA|WORD3|USER DATA|                    |\n");
     printf("+----------------------------------------------------------+\n");
@@ -1166,23 +1168,21 @@ void compile_number(char *word, char numericity) {
     wspacend += sizeof(Cell);
 }
 
-/*char *load_string_wspace(char *str);
+char *load_string(char *str);
 void compile_string(char *str) {
     // STRLIT
     *(Cell*)wspacend = (Cell){.w=strlit_word};
     wspacend += sizeof(Cell);
 
-    load_string_wspace(str);
-    }*/
+    load_string(str);
+}
 
 // Execute a thing from a userword
 void execute(Word *w);
-void execute_thing(Cell c) {
-    static int is_cell = 0;
+Cell *execute_thing(Cell *cp) {
+    Cell c = *cp;
 
-    //printf("ET{\n");
-
-    //printf(">cell\n");
+    /*
     if (is_cell) {
         is_cell = 0;
         // Ensure cat there is no stack overflow
@@ -1190,57 +1190,54 @@ void execute_thing(Cell c) {
         // Push
         *++stacktop = c;
         return;
-    }
+        }*/
 
     // System word
     if (c.w->flags & FL_PREDEFINED) {
         // A phony pointer signals that the next Cell is data
-        //printf(">predefined\n");
-        if (c.w->sw == lit_w) is_cell = 1;
+        if (c.w->sw == lit_w) {
+            ++stacktop;
+            *stacktop = *(cp+1);
+            return cp+2;
+        }
+        if (c.w->sw == strlit_w) {
+            ++stacktop;
+            stacktop->p = (void*)(cp+1);
+            char *ch;
+            for(ch = (char*)(cp+1); *ch; ch++);
+            return (Cell*)(ch+1);
+        }
         else c.w->sw();
-        return;
+        if (need_jump) {
+            need_jump = 0;
+            /*if (absjump < begin || absjump > end) {
+                error("Jump outside of body: %p\n", (void*)absjump);
+                return cp+1;
+                }*/
+
+            return absjump;
+        }
+        return cp+1;
     }
 
-    //printf(">userword\n");
     // Userword
     // Note: recursive
     // TODO: rewrite non-recursively (?)
     execute(c.w);
 
     //printf("}\n");
-    return;
+    return cp+1;
 }
 
 void decompile(Cell *begin, Cell *end);
 void execute_raw(Cell *begin, Cell *end) {
-    //printf("E::\n");
-    //decompile(begin, end);
-    Cell *t;
-    for (t = begin; t < end; t++) {
+    for (Cell *t = begin; t < end;) {
         if (error_happened) {
             error("An error occured during execution -- stopping\n");
             break;
         }
         
-        //printf("Executing at %p\n", (void*)t);
-        execute_thing(*t);
-        //printf("t++=%p\n", (void*)(t+1));
-    
-        if (need_jump) {
-            //printf("-- Received need_jump to %p\n", (void*)absjump);
-            //if (absjump == end) printf("-- This is the end\n");
-            need_jump = 0;
-            if (absjump < begin || absjump > end) {
-                error("Jump outside of body: %p\n", (void*)absjump);
-                break;
-            }
-            
-            t = absjump;
-            
-            // Allow programs to branch to end and thus end execution
-            t--;
-            continue;
-        }
+        t = execute_thing(t);
     }
 }
 
@@ -1312,7 +1309,7 @@ int flagcheck(Word *w) {
     return 0;
 }
 
-char *load_string_wspace(char *str) {
+char *load_string(char *str) {
     char *begin = wspacend;
 
     int escape = 0;
@@ -1372,11 +1369,11 @@ void eval() {
            word[strlen(word)-1] = 0;
            
            if (state) {
-               error("Cannot compile a string into a word -- not yet supported!\n");
+               compile_string(word);
                continue;
            }
 
-           (++stacktop)->p = load_string_wspace(word);
+           (++stacktop)->p = load_string(word);
 
            continue;
        }
@@ -1472,6 +1469,7 @@ const char *doc_doc =
     "Displays the docstring; If none found, reports error.\n";
 
 const char *doc_lit = "A phony word for compiling numbers.\n";
+const char *doc_strlit = "A phony word for compiling strings.\n";
 
 const char *doc_exit = "(i -- )\nExit the program with code I.\n";
 
@@ -1709,8 +1707,8 @@ void init_dict() {
     *dicttop++ = (DictEntry){"EXIT", SYSWORD(exit_w,0,doc_exit)};
     *dicttop++ = (DictEntry){"LIT", SYSWORD(lit_w,FL_IMMEDIATE,doc_lit)};
     lit_word = &(dicttop-1)->w;
-    /**dicttop++ = (DictEntry){"STRLIT", SYSWORD(strlit_w,FL_IMMEDIATE,NULL)};
-    strlit_word = &(dicttop-1)->w;*/
+    *dicttop++ = (DictEntry){"STRLIT", SYSWORD(strlit_w,FL_IMMEDIATE,doc_strlit)};
+    strlit_word = &(dicttop-1)->w;
     *dicttop++ = (DictEntry){"BRANCH", SYSWORD(branch_w,FL_COMPONLY,doc_branch)};
     *dicttop++ = (DictEntry){"0BRANCH", SYSWORD(zbranch_w,FL_COMPONLY,doc_zbranch)};
     *dicttop++ = (DictEntry){"'", SYSWORD(findword_w,0,doc_findword)};

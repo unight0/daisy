@@ -47,7 +47,7 @@
 
 \ : variable here 1 reserve constant ;
 
-(
+( IDEA
 \ v stacktop --
 : >C dup @ 1+ rot swap !! swap ! ;
 
@@ -96,8 +96,6 @@ cfs variable cfst
 \ Writes a string to FD
 : writestr dup strlen write ;
 
-\ Idea: :noname ;run syntax. Compiles a noname word, executes it, unreserves memory
-
 \ Idea: FFI
 \ dlopen libc.so
 \ 3 1 ffi socket socket dlerr? ...
@@ -125,5 +123,13 @@ cfs variable cfst
 : [eb] immediate compile-only eb ,, ;
 
 \ Memory usage and memory left utilities
-: memusage here base - . 'B' emit newline emit ;
-: memleft tip here - . 'B' emit newline emit ;
+: memusage here base - . "B\n" type ;
+: memleft tip here - . "B\n" type ;
+
+\ TODO
+(
+\ : memusage here base - "%iB\n" printf ;
+%u
+%i
+%f
+)
