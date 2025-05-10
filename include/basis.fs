@@ -43,20 +43,6 @@
 \ ( A B -- B ) writes byte A to addres B preserving B on stack
 : !!b dup rot swap !b ;
 
-\ : buffer create reserve ;
-
-\ : variable here 1 reserve constant ;
-
-( IDEA
-\ v stacktop --
-: >C dup @ 1+ rot swap !! swap ! ;
-
-128 cells buffer cfs
-cfs variable cfst
-10 cfst >C C>
-)
-
-
 ( This is a
   multiline comment
   Note: multiline comments don't work in REPL.  )
@@ -84,7 +70,21 @@ cfs variable cfst
 \ Additionally, when (or IF) we implement a multithreading model,
 \ It will be designed in such a way that this wouldn't be an issue.
 \ (here --)
-: } compile-only immediate 0 state !b here over over - reserve execute  ;
+: } compile-only immediate 0 state !b ['] wordend , here over swap - reserve execute ;
+
+\ (val -- name --)
+\ Execution of a variable: (-- addr)
+: variable create , ;
+
+\ Helper for CONSTANT
+: does>@ does> @ ;
+
+\ (val -- name --)
+\ Execution of a constant: (-- val)
+: constant create does>@ , ;
+
+\ Ideas 
+: buffer create reserve ;
 
 \ Types out a string
 : type while dup @b dup 0 != do emit 1 + done drop drop ;

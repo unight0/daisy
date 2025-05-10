@@ -35,7 +35,6 @@ typedef union {
 
 struct Word {
     char flags;
-    Cell *end;
     // Documentation
     const char *docstring;
     //char signature;
@@ -53,16 +52,21 @@ enum {
     FL_PREDEFINED = (1<<3),
 };
 
-#define SYSWORD(s,fl,dc) (Word){FL_PREDEFINED|(fl),NULL,(dc),.sw=(s)}
+#define SYSWORD(s,fl,dc) (Word){FL_PREDEFINED|(fl),(dc),.sw=(s)}
 
 // A phony word for compiling numbers
 void lit_w() {}
 // Same but for strings
 void strlit_w() {}
+// Indicates the end of the word
+void wordend_w() {}
+// Not phony! But doesn't do anything on its own, serves as a marker
+void does_w() {}
 
 // Set in init_dict()
 Word *lit_word = NULL;
 Word *strlit_word = NULL;
+Word *wordend_word = NULL;
 
 #define STACK_SIZE 128
 // Stack && topmost element
@@ -86,7 +90,7 @@ DictEntry dict[DICT_SIZE] = {0}, *dicttop = dict, *userwords = dict;
 // protection.
 // TODO: malloc it (?)
 // WSBLOCKS_SIZE = size of one word space memory block
-#define WSBLOCK_SIZE sizeof(Word)*DICT_SIZE*2
+#define WSBLOCK_SIZE (size_t)16*1024
 char wordspace[WSBLOCK_SIZE] = {0}, *wspacend = wordspace;
 
 // For error display
@@ -686,6 +690,40 @@ void colon_w() {
     state = 1;
 }
 
+void create_w() {
+    char *name = parse();
+
+    if (name == NULL) {
+        error("Error: No word provided for 'create'\n");
+        return;        
+    }
+
+    // Capitalize
+    for (char *np = name; *np; ++np) {
+        *np = toupper(*np);
+    }
+    
+    // Copy name
+    char *dictname = malloc(strlen(name) + 1);
+    strcpy(dictname, name);
+
+    dict_entry(dictname);
+
+    
+    ((Cell*)wspacend)->w = lit_word;
+    wspacend += sizeof(Cell);
+
+    Cell *data = (Cell*)wspacend;
+    wspacend += sizeof(Cell);
+    
+    ((Cell*)wspacend)->w = wordend_word;
+    wspacend += sizeof(Cell);
+
+    data->p = (void*)wspacend;
+}
+
+
+
 void scolon_w() {
     Word *w = find_word(comptarget);
 
@@ -695,9 +733,11 @@ void scolon_w() {
         error("Cannot assign a body to a non-existent word!\n");
         comptarget = NULL;
     }
+
+    *(Cell*)wspacend = (Cell){.w=wordend_word};
+    wspacend += sizeof(Cell);
     
     // Finish the word declaration    
-    w->end = (Cell*)wspacend;
     wspacend++;
 
 
@@ -710,14 +750,16 @@ void scolon_w() {
     state = 0;
 }
 
-void execute_raw(Cell *begin, Cell *end);
+void execute_raw(Cell *begin);
 void execute_w() {
-    if(ASKSTACK(2)) return;
+    if(ASKSTACK(1)) return;
 
-    Cell *end = (Cell*)stacktop--->p;
+    //TODO!!!!!!!
+    //Cell *end = (Cell*)stacktop--->p;
+    //(void)end;
     Cell *begin = (Cell*)stacktop--->p;
 
-    execute_raw(begin, end);
+    execute_raw(begin);
 }
 
 //TODO: these flag-words should be put AFTER the word,
@@ -1182,16 +1224,6 @@ void execute(Word *w);
 Cell *execute_thing(Cell *cp) {
     Cell c = *cp;
 
-    /*
-    if (is_cell) {
-        is_cell = 0;
-        // Ensure cat there is no stack overflow
-        if (askspace(1)) exit(1);
-        // Push
-        *++stacktop = c;
-        return;
-        }*/
-
     // System word
     if (c.w->flags & FL_PREDEFINED) {
         // A phony pointer signals that the next Cell is data
@@ -1229,11 +1261,55 @@ Cell *execute_thing(Cell *cp) {
     return cp+1;
 }
 
-void decompile(Cell *begin, Cell *end);
-void execute_raw(Cell *begin, Cell *end) {
-    for (Cell *t = begin; t < end;) {
+const char *reverse_search(Word*);
+void dodoes(Cell *c) {
+    Cell *word = (dicttop-1)->w.body;
+
+    if (dicttop->w.flags & FL_PREDEFINED) {
+        error("Cannot modify a predefined word with does>!\n"
+              "Create a new word with CREATE <word> before using does>!\n");
+        return;
+    }
+
+    /* Pointer to the memory just after the word definition */
+    // The result: LIT <ptr> ... WORDEND <mem at ptr>
+    // LIT
+    word->w = lit_word;
+    word++;
+
+    // <ptr>
+    Cell *ptr = word;
+    word++;
+    
+    // Copy the rest
+    for (;c->w->sw != wordend_w; c++, word++) {
+        *word = *c;
+    }
+
+    word->w = wordend_word;
+    word++;
+    ptr->p = (void*)word;
+
+    if (wspacend > (char*)word) {
+        printf("Oops! We did a fucky-wucky! We've allocated something after CREATE and before DOES>!\n"
+               "And then we overwrote it with DOES>.");
+    }
+    wspacend = (char*)word;
+}
+
+void execute_raw(Cell *begin) {
+    for (Cell *t = begin;;) {
         if (error_happened) {
             error("An error occured during execution -- stopping\n");
+            break;
+        }
+
+        if (t->w->sw == wordend_w)
+            break;
+        
+        if (t->w->sw == does_w) {
+            //(dicttop-1)->w.body = t+1;
+            dodoes(t+1);
             break;
         }
         
@@ -1256,7 +1332,7 @@ void execute(Word *w) {
         return;
     }
 
-    execute_raw(w->body, w->end);
+    execute_raw(w->body);
 
     //printf("Ended execution at %p\n", (void*)t);
 }
@@ -1411,14 +1487,14 @@ const char *reverse_search(Word *w) {
 
 // Displays the word definition
 // TODO: implement in userspace
-void decompile(Cell *begin, Cell *end) {
+void decompile(Cell *begin) {
     int last_lit = 0;
-    //printf("WORD SIZE: %lu\n", w->end-w->body);
 
-    for (Cell *p = begin; p < end; p++) {
+    for (Cell *p = begin; p->w->sw != wordend_w; p++) {
 
         const char *name = reverse_search(p->w);
-
+        
+        // TODO: add strlit support
         if (name == NULL && last_lit) {
             last_lit = 0;
             printf("%lu ", p->i);
@@ -1460,7 +1536,7 @@ void see_w() {
         return;
     }
 
-    decompile(w->body, w->end);
+    decompile(w->body);
 }
 
 const char *doc_doc = 
@@ -1470,6 +1546,7 @@ const char *doc_doc =
 
 const char *doc_lit = "A phony word for compiling numbers.\n";
 const char *doc_strlit = "A phony word for compiling strings.\n";
+const char *doc_wordend = "A phony word for finishing words.\n";
 
 const char *doc_exit = "(i -- )\nExit the program with code I.\n";
 
@@ -1709,10 +1786,14 @@ void init_dict() {
     lit_word = &(dicttop-1)->w;
     *dicttop++ = (DictEntry){"STRLIT", SYSWORD(strlit_w,FL_IMMEDIATE,doc_strlit)};
     strlit_word = &(dicttop-1)->w;
+    *dicttop++ = (DictEntry){"WORDEND", SYSWORD(wordend_w,FL_IMMEDIATE,doc_wordend)};
+    wordend_word = &(dicttop-1)->w;
     *dicttop++ = (DictEntry){"BRANCH", SYSWORD(branch_w,FL_COMPONLY,doc_branch)};
     *dicttop++ = (DictEntry){"0BRANCH", SYSWORD(zbranch_w,FL_COMPONLY,doc_zbranch)};
     *dicttop++ = (DictEntry){"'", SYSWORD(findword_w,0,doc_findword)};
     *dicttop++ = (DictEntry){":", SYSWORD(colon_w,FL_IMMEDIATE|FL_INTERONLY,doc_colon)};
+    *dicttop++ = (DictEntry){"CREATE", SYSWORD(create_w,0,NULL)};
+    *dicttop++ = (DictEntry){"DOES>", SYSWORD(does_w,0,NULL)};
     *dicttop++ = (DictEntry){";", SYSWORD(scolon_w,FL_IMMEDIATE|FL_COMPONLY,doc_semicolon)};
     *dicttop++ = (DictEntry){"EXECUTE", SYSWORD(execute_w,0,doc_execute)};
     *dicttop++ = (DictEntry){"IMMEDIATE", SYSWORD(immediate_w,FL_IMMEDIATE|FL_COMPONLY,doc_immediate)};
