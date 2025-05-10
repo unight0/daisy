@@ -35,8 +35,10 @@ typedef union {
 
 struct Word {
     char flags;
+    #ifdef FT_DOCS
     // Documentation
     const char *docstring;
+    #endif
     //char signature;
     union {
         Cell *body;
@@ -52,7 +54,11 @@ enum {
     FL_PREDEFINED = (1<<3),
 };
 
+#ifdef FT_DOCS
 #define SYSWORD(s,fl,dc) (Word){FL_PREDEFINED|(fl),(dc),.sw=(s)}
+#else
+#define SYSWORD(s,fl,dc) (Word){FL_PREDEFINED|(fl),.sw=(s)}
+#endif /* FT_DOCS */
 
 // A phony word for compiling numbers
 void lit_w() {}
@@ -116,23 +122,11 @@ char *line_begin, *prev_line_begin = NULL;
 // Display err instead of ok
 int error_happened = 0;
 // Error reporitng
-#define error(cs, ...){                            \
-    error_happened = 1;                        \
-    /*if (!repl_expression) {                                           \
-        fprintf(stderr, "\033[m\033[1mAt %lu:%ld, '%s': ", line, line_begin-prev_line_begin-1, lastword); \
-        for(char *p = prev_line_begin; p < line_begin; p++)        \
-        if (*p) fputc(*p, stderr);                \
-        else fputc(' ', stderr);                \
-        fputc('\n', stderr);                    \
-        fprintf(stderr, "%*c^", (int)(lastword-prev_line_begin-1), ' '); \
-        fprintf(stderr, cs, ##__VA_ARGS__);                \
-        fprintf(stderr, "\033[m");                    \
-        }*/                                         \
-    /*else {*/                                                      \
-    fprintf(stderr, "\033[m\033[1m--> At %lu, '%s': ", line+1, lastword);    \
-        fprintf(stderr, cs, ##__VA_ARGS__);                \
-        fprintf(stderr, "\033[m");                    \
-        /*}*/                                       \
+#define error(cs, ...){                                                 \
+        error_happened = 1;                                             \
+        fprintf(stderr, "\033[m\033[1m--> At %lu, '%s': ", line+1, lastword); \
+        fprintf(stderr, cs, ##__VA_ARGS__);                             \
+        fprintf(stderr, "\033[m");                                      \
 }
 
 // Report insufficient arguments
@@ -839,6 +833,7 @@ void load_w() {
 
 // DRY!
 #define DOCGUARD(c) for(int i = 0; i < c; i++) fputc('-', stdout); fputc('\n', stdout);
+#ifdef FT_DOCS
 // Shows docstring for the word
 void doc_w() {
     char *word = parse();
@@ -896,6 +891,8 @@ void docmem_w() {
     
     DOCGUARD(80);
 }
+
+#endif /* FT_DOCS */
 
 // A B -- B A
 void swap_w(void) {
@@ -1538,6 +1535,8 @@ void see_w() {
     decompile(w->body);
 }
 
+#ifdef FT_DOCS
+
 const char *doc_doc = 
     "Reads the word name from source ahead.\n"
     "Attempts to access the docstring of the word.\n"
@@ -1797,6 +1796,8 @@ const char *doc_execute =
     "Executes a set of instructions starting from BEGIN.\n"
     "Use this if you want to execute an anonymous word.\n";
 
+#endif /* FT_DOCS */
+
 // Dictionary initialization
 void init_dict() {
     /* Basics */
@@ -1819,8 +1820,11 @@ void init_dict() {
     *dicttop++ = (DictEntry){"INTERPRETATION-ONLY", SYSWORD(interpretation_only_w,FL_IMMEDIATE|FL_COMPONLY,doc_interonly)};
     *dicttop++ = (DictEntry){"COMPILE-ONLY", SYSWORD(compile_only_w,FL_IMMEDIATE|FL_COMPONLY,doc_componly)};
     *dicttop++ = (DictEntry){"LOAD", SYSWORD(load_w,FL_INTERONLY,doc_load)};
+    
+#ifdef FT_DOCS
     *dicttop++ = (DictEntry){"DOC", SYSWORD(doc_w,FL_INTERONLY,doc_doc)};
     *dicttop++ = (DictEntry){"DOC-MEM", SYSWORD(docmem_w,FL_INTERONLY,doc_docmem)};
+#endif
     *dicttop++ = (DictEntry){"DUMPSTACK", SYSWORD(dumpstack_w,0,"")};
 
     /* Memory */
@@ -2034,7 +2038,7 @@ void segv_handle(int _sig) {
     (void)_sig;
 
     error("Segmentation fault!\n");
-    printf("You poked a peeked where you shouldn't have.\n");
+    printf("You poked and peeked where you shouldn't have.\n");
     printf("Restoring system...\n");
     printf("Warning: stability is not guaranteed!\n");
     error_happened = 0;

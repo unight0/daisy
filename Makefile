@@ -8,14 +8,19 @@ CC=gcc
 DEBUGFLAGS=-fsanitize=address -g
 INCL_PATH=$(PREFIX)/include/
 BIN_PATH=$(PREFIX)/bin/
-CCFLAGS=-Wall -Wextra -Werror -DINCLUDE_PATH='"$(INCL_PATH)"'
-LDFLAGS= #-lreadline
+CCFLAGS=-Wall -Wextra -Werror
+LDFLAGS=#-lreadline
+# These are the optional features of the kernel
+# Modify them to suit your needs
+# Documentation about each feature will be written
+# in future updates.
+FEATURES=-DFT_DOCS -DINCLUDE_PATH='"$(INCL_PATH)"'
 
 kern: kern.c
-	$(CC) $? $(CCFLAGS) $(LDFLAGS) -o $@
+	$(CC) $? $(CCFLAGS) $(LDFLAGS) $(FEATURES) -o $@
 
 debug: kern.c
-	$(CC) $? $(CCFLAGS) $(DEBUGFLAGS) $(LDFLAGS) -o $@
+	$(CC) $? $(CCFLAGS) $(DEBUGFLAGS) $(LDFLAGS) $(FEATURES) -o $@
 
 install: kern
 	[ -d $(BIN_PATH) ] || mkdir $(BIN_PATH)
