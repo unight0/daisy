@@ -1489,23 +1489,20 @@ const char *reverse_search(Word *w) {
 // TODO: implement in userspace
 void decompile(Cell *begin) {
     int last_lit = 0;
-
-    for (Cell *p = begin; p->w->sw != wordend_w; p++) {
-
+    
+    for (Cell *p = begin; last_lit || p->w->sw != wordend_w; p++) {
         const char *name = reverse_search(p->w);
         
         // TODO: add strlit support
-        if (name == NULL && last_lit) {
+        if (last_lit) {
             last_lit = 0;
             printf("%lu ", p->i);
-            //printf("%p ", p->w);
         }
 
         else if (name == NULL) printf("<?(%p)> ", p->p);
 
         else {
             if (p->w == lit_word) last_lit = 1;
-            //printf("%s{%p} ", name, p);
             printf("%s ", name);
         }
     }
@@ -1528,6 +1525,8 @@ void see_w() {
         error("Word not found: %s\n", name);
         return;
     }
+
+    printf("Note: SEE cannot properly handle RETURNs in the middle of a word (yet).\n");
 
     putflags(w);
 
@@ -1588,16 +1587,36 @@ const char *doc_branch =
     "Cannot be used properly by user, used by IF ELSE etc.\n";
 
 const char *doc_zbranch =
-    "(cond addr -- )\n"
+    "(cond addr --)\n"
     "Branch to ADDR if cond == 0.\n"
     "Cannot be used properly by user, used by IF ELSE etc.\n";
 
 const char *doc_colon =
-    "(-- wordname -- )\n"
+    "(-- wordname --)\n"
     "Scans the name for the new word from source ahead.\n"
     "Puts the system into compilation mode.\n"
     "Use it like this:\n"
     "\t: myword 1 2 3 4 ;\n";
+
+const char *doc_create =
+    "(-- wordname --)\n"
+    "Creates a new word with name WORDNAME with the following default body:\n"
+    "\tLIT <ptr> ENDWORD\n"
+    "\t      |-----------^\n"
+    "Used for CONSTANT and VARIABLE.\n"
+    "Use DOES> to replace the body of the newly created word.\n";
+
+const char *doc_does =
+    "(-- code ahead --)\n"
+    "Reads the until ; for the code ahead\n"
+    "Modifies the definition of the just CREATEd word to fit the following:\n"
+    "\tLIT <ptr> <code ahead> ENDWORD\n"
+    "\t      |------------------------^\n"
+    "Typical usage example:\n"
+    "\t: does>@ does> @ ;\n"
+    "\t: constant create does>@ , ;\n"
+    "Note: if you don't want the pointer to the memory right after the end of word, drop it:\n"
+    "... does> drop ... ;\n";
 
 const char *doc_semicolon =
     "(--)\n"
@@ -1774,8 +1793,8 @@ const char *doc_docmem =
     "Show clarifications about the FORTH memory model.\n";
 
 const char *doc_execute =
-    "(begin end --)\n"
-    "Executes a set of instructions from BEGIN to END.\n"
+    "(begin --)\n"
+    "Executes a set of instructions starting from BEGIN.\n"
     "Use this if you want to execute an anonymous word.\n";
 
 // Dictionary initialization
@@ -1786,14 +1805,14 @@ void init_dict() {
     lit_word = &(dicttop-1)->w;
     *dicttop++ = (DictEntry){"STRLIT", SYSWORD(strlit_w,FL_IMMEDIATE,doc_strlit)};
     strlit_word = &(dicttop-1)->w;
-    *dicttop++ = (DictEntry){"WORDEND", SYSWORD(wordend_w,FL_IMMEDIATE,doc_wordend)};
+    *dicttop++ = (DictEntry){"RETURN", SYSWORD(wordend_w,0,doc_wordend)};
     wordend_word = &(dicttop-1)->w;
     *dicttop++ = (DictEntry){"BRANCH", SYSWORD(branch_w,FL_COMPONLY,doc_branch)};
     *dicttop++ = (DictEntry){"0BRANCH", SYSWORD(zbranch_w,FL_COMPONLY,doc_zbranch)};
     *dicttop++ = (DictEntry){"'", SYSWORD(findword_w,0,doc_findword)};
     *dicttop++ = (DictEntry){":", SYSWORD(colon_w,FL_IMMEDIATE|FL_INTERONLY,doc_colon)};
-    *dicttop++ = (DictEntry){"CREATE", SYSWORD(create_w,0,NULL)};
-    *dicttop++ = (DictEntry){"DOES>", SYSWORD(does_w,0,NULL)};
+    *dicttop++ = (DictEntry){"CREATE", SYSWORD(create_w,0,doc_create)};
+    *dicttop++ = (DictEntry){"DOES>", SYSWORD(does_w,0,doc_does)};
     *dicttop++ = (DictEntry){";", SYSWORD(scolon_w,FL_IMMEDIATE|FL_COMPONLY,doc_semicolon)};
     *dicttop++ = (DictEntry){"EXECUTE", SYSWORD(execute_w,0,doc_execute)};
     *dicttop++ = (DictEntry){"IMMEDIATE", SYSWORD(immediate_w,FL_IMMEDIATE|FL_COMPONLY,doc_immediate)};

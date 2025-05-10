@@ -47,22 +47,16 @@
   multiline comment
   Note: multiline comments don't work in REPL.  )
 
-\ : ." while eb dup '"' != over 0 != and do emit done drop ;
-
-\ Writes a c-string into wordspace
-\ : " here while eb dup '"' != over 0 != and do ,b done drop 0 ,b ;
-
-
-\ Briefly enter compilation mode, execute the
-\ created word, and then delete it
-
 \ SUPER-MEGA-ACHTUNG!!
 \ { places HERE at the top of the stack, and } uses it!
 \ Therefore, the top element on the stack upon executing } should be
 \ the HERE left by the {
 \ If you fail to comply with this, it produces a hardly-debuggable segfault!
 \ Be careful with custom IMMEDIATE words!
+\ NOTICE: SAME APPLIES FOR IF .. ENDIF and WHILE .. DO .. DONE!
 
+\ Briefly enter compilation mode, execute the
+\ created word, and then delete it
 \ ( -- here)
 : { interpretation-only here 1 state !b ;
 \ We are unreserving memory before we execute its contents,
@@ -83,7 +77,8 @@
 \ Execution of a constant: (-- val)
 : constant create does>@ , ;
 
-\ Ideas 
+\ (size -- name --)
+\ Execution of a buffer: (-- addr)
 : buffer create reserve ;
 
 \ Types out a string
