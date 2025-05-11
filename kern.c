@@ -376,6 +376,8 @@ void cells_w() {
     error("NULL as filename string\n");\
     return; }
 
+
+
 // filename WR? RD? -- fd
 void open_w() {
     if (ASKSTACK(2)) return;
@@ -413,8 +415,8 @@ void touch_w() {
     int fd = open(filename, O_CREAT|O_RDWR|O_TRUNC, 0644);
 
     if (fd == -1) {
-    error("Could'n touch '%s': ", filename);
-    perror("");
+        error("Could'n touch '%s': ", filename);
+        perror("");
     }
 
     // Return -1
@@ -460,7 +462,6 @@ void trunc_w() {
     size_t sz = stacktop--->u;
     int fd = stacktop->i;
 
-    printf("Truncating to %lu\n", sz);
     if (ftruncate(fd, sz)) {
         error("Couldn't truncate(resize) file: ");
         perror("");
@@ -781,14 +782,14 @@ void interpretation_only_w() {
 char *find_by_filehint(char *filehint) {
     // <exact-filename>
     if (*filehint == '"' && filehint[strlen(filehint)-1] == '"') {
-    filehint[strlen(filehint)-1] = 0;
-    filehint++;
-    return filehint;
+        filehint[strlen(filehint)-1] = 0;
+        filehint++;
+        return filehint;
     }
 
     // Local directory
     if (access(filehint, F_OK) == 0) {
-    return filehint;
+        return filehint;
     }
     
     // Tip: Define INCLUDE_PATH from the outside
@@ -839,29 +840,29 @@ void doc_w() {
     char *word = parse();
 
     if (word == NULL) {
-    error("No word provided for DOC!\n");
-    return;
+        error("No word provided for DOC!\n");
+        return;
     }
 
     Word *w = find_word(word);
 
     if (w == NULL) {
-    error("Cannot show documentation for a non-existent word!\n");
-    return;
+        error("Cannot show documentation for a non-existent word!\n");
+        return;
     }
     
     DOCGUARD(80);
     
     if (w->docstring == NULL) {
-    printf("No documentation available\n");
-    DOCGUARD(80);
-    return;
+        printf("No documentation available\n");
+        DOCGUARD(80);
+        return;
     }
 
     if (!*w->docstring) {
-    printf("Documentation is empty\n");
-    DOCGUARD(80);
-    return;
+        printf("Documentation is empty\n");
+        DOCGUARD(80);
+        return;
     }
 
     printf("DOCUMENTATION FOR '%s'\n", word);
@@ -1820,12 +1821,13 @@ void init_dict() {
     *dicttop++ = (DictEntry){"INTERPRETATION-ONLY", SYSWORD(interpretation_only_w,FL_IMMEDIATE|FL_COMPONLY,doc_interonly)};
     *dicttop++ = (DictEntry){"COMPILE-ONLY", SYSWORD(compile_only_w,FL_IMMEDIATE|FL_COMPONLY,doc_componly)};
     *dicttop++ = (DictEntry){"LOAD", SYSWORD(load_w,FL_INTERONLY,doc_load)};
+    *dicttop++ = (DictEntry){"DUMPSTACK", SYSWORD(dumpstack_w,0,"")};
     
 #ifdef FT_DOCS
     *dicttop++ = (DictEntry){"DOC", SYSWORD(doc_w,FL_INTERONLY,doc_doc)};
     *dicttop++ = (DictEntry){"DOC-MEM", SYSWORD(docmem_w,FL_INTERONLY,doc_docmem)};
 #endif
-    *dicttop++ = (DictEntry){"DUMPSTACK", SYSWORD(dumpstack_w,0,"")};
+
 
     /* Memory */
     //TODO: documentation + doc-mem, because the memory system of forth
