@@ -7,27 +7,28 @@
 #include <unistd.h> //access()
 #include <fcntl.h>
 #include <sys/stat.h>
+#include <errno.h>
 
 typedef void (*SysWord)(void);
 typedef struct Word Word;
-#ifdef SIZE_64
-typedef int64_t isize_t;
-typedef uint64_t usize_t;
-#elseif defined(SIZE_32)
-typedef int32_t isize_t;
-typedef uint32_t usize_t;
-#elseif defined(SIZE_16)
-typedef int16_t isize_t;
-typedef uint16_t usize_t;
+typedef intptr_t isize_t;
+typedef uintptr_t usize_t;
+
+typedef
+#if INTPTR_MAX == INT64_MAX
+double
+#elif INTPTR_MAX == INT32_MAX
+float
 #else
-typedef int64_t isize_t;
-typedef uint64_t usize_t;
+#warning "You are running some esoteric shit, be careful!"
+float
 #endif
-typedef usize_t size_t;
+float_t;
+
 typedef union {
     isize_t i;
     usize_t u;
-    double f;
+    float_t f;
     char *s;
     void *p;
     Word *w;
@@ -65,14 +66,14 @@ void lit_w() {}
 // Same but for strings
 void strlit_w() {}
 // Indicates the end of the word
-void wordend_w() {}
+void return_w() {}
 // Not phony! But doesn't do anything on its own, serves as a marker
 void does_w() {}
 
 // Set in init_dict()
 Word *lit_word = NULL;
 Word *strlit_word = NULL;
-Word *wordend_word = NULL;
+Word *return_word = NULL;
 
 #define STACK_SIZE 128
 // Stack && topmost element
@@ -98,6 +99,12 @@ DictEntry dict[DICT_SIZE] = {0}, *dicttop = dict, *userwords = dict;
 // WSBLOCKS_SIZE = size of one word space memory block
 #define WSBLOCK_SIZE (size_t)16*1024
 char wordspace[WSBLOCK_SIZE] = {0}, *wspacend = wordspace;
+
+// These are the files that have already been loaded
+// Avoid word redifinition
+#define LOADED_COUNT 128
+char *loaded[LOADED_COUNT] = {NULL};
+
 
 // For error display
 int repl_expression = 0;
@@ -192,6 +199,10 @@ void wspacedealloc() {
 void bye(int c) {
     for (DictEntry *p = userwords; p < dicttop; p++) {
         free(p->name);
+    }
+    for (char **ld = loaded; *ld != NULL; ld++) {
+        printf("Freeing '%s'\n", *ld);
+        free(*ld);
     }
     //wspacedealloc();
     exit(c);
@@ -303,7 +314,6 @@ void bwr_w() {
 
     char *addr = stacktop--->p;
     char byte = (char)stacktop--->i;
-
 
     *addr = byte;
 }
@@ -567,6 +577,41 @@ void emit_w() {
     putchar(stacktop--->i);
 }
 
+// Ugly, but there's no other way
+int syscall_disp(long sysc, long argnum, long arg[argnum]) {
+    if (argnum == 0) return syscall(sysc);
+    if (argnum == 1) return syscall(sysc, arg[0]);
+    if (argnum == 2) return syscall(sysc, arg[0], arg[1]);
+    if (argnum == 3) return syscall(sysc, arg[0], arg[1], arg[2]);
+    if (argnum == 4) return syscall(sysc, arg[0], arg[1], arg[2], arg[3]);
+    if (argnum == 5) return syscall(sysc, arg[0], arg[1], arg[2], arg[3], arg[4]);
+    if (argnum == 6) return syscall(sysc, arg[0], arg[1], arg[2], arg[3], arg[4], arg[5]);
+    error("SYSCALL with more than 6 args is unsupported.\n"
+          "Note: wtf are you trying to do?\n");
+    return -1;
+}
+
+void syscall_w() {
+    if (ASKSTACK(2)) return;
+
+    long sysc = (long)stacktop--->i;
+    size_t argnum = stacktop--->i;
+
+    long args[argnum];
+    memset(args, 0, argnum*sizeof(long));
+
+    for (size_t i = 0; i < argnum; i++) {
+        if (ASKSTACK(1)) return;
+        args[i] = stacktop--->i;
+    }
+    
+    int ret = syscall_disp(sysc, argnum, args);
+    if (ret == -1)
+        (++stacktop)->i = errno;
+    else
+        (++stacktop)->i = 0;
+}
+
 void exprbyte_w() {
     if(askspace(1)) return;
 
@@ -621,6 +666,7 @@ void flags_w() {
     putflags(w);
 }
 
+
 // Adds entry if not present
 // TODO: store entries in wordspace
 void dict_entry(char *entry) {
@@ -633,9 +679,16 @@ void dict_entry(char *entry) {
         if (!strcmp(p->name, entry)) {
             p->w.body = (Cell*)wspacend;
 
-            /* Replace to avoid memory leak*/
+            /* TODO: replace this later (?) */
+            if (p->w.flags & FL_PREDEFINED) {
+                error("Attempting to redefine a predefined word\n");
+                return;
+            }
+
+            // Reassign
             free(p->name);
             p->name = entry;
+
             return;
         }
     }
@@ -660,6 +713,19 @@ Word *find_word(char *word) {
     return NULL;
 }
 
+//TODO: DRY it up a bit
+Word *find_wordq(char *word) {
+    // (convert to uppercase)
+    for (char *p = word; *p; ++p) *p = toupper(*p);
+    // Search dictionary entries
+    for(DictEntry *p = dict; p < dicttop; ++p) {
+        //printf("%s =? %s\n", word, p->name);
+        if(!strcmp(p->name, word)) return &(p->w);
+    }
+    
+    return NULL;
+}
+
 char *parse();
 void colon_w() {
     char *name = parse();
@@ -677,7 +743,7 @@ void colon_w() {
     // Copy name
     char *dictname = malloc(strlen(name) + 1);
     strcpy(dictname, name);
-
+    
     dict_entry(dictname);
     comptarget = dictname;
 
@@ -711,7 +777,7 @@ void create_w() {
     Cell *data = (Cell*)wspacend;
     wspacend += sizeof(Cell);
     
-    ((Cell*)wspacend)->w = wordend_word;
+    ((Cell*)wspacend)->w = return_word;
     wspacend += sizeof(Cell);
 
     data->p = (void*)wspacend;
@@ -719,6 +785,7 @@ void create_w() {
 
 
 
+size_t bodylen(Cell*);
 void scolon_w() {
     Word *w = find_word(comptarget);
 
@@ -729,15 +796,17 @@ void scolon_w() {
         comptarget = NULL;
     }
 
-    *(Cell*)wspacend = (Cell){.w=wordend_word};
+    *(Cell*)wspacend = (Cell){.w=return_word};
     wspacend += sizeof(Cell);
-    
-    // Finish the word declaration    
-    wspacend++;
+
+    //TODO: why tf did I put it here? Does it do smth? Investigate.
+    //INVESTIGATION(1): so far it just breaks stuff or doesn't do anything, commenting out for now
+    //wspacend++;
 
 
     if (error_happened) {
         error("A compilation error happened -- abandoning the word\n");
+        //FIXME!!!: if we're redifining, this will break stuff
         dicttop--;
     }
     
@@ -815,6 +884,8 @@ char *find_by_filehint(char *filehint) {
 #endif
 }
 
+
+
 void eval_file(const char *filename);
 // Loads file
 void load_w() {
@@ -826,8 +897,27 @@ void load_w() {
         error("Could not find file using filehint '%s'!\n", filehint);
         return;
     }
+
+    // Note: if you load more than 128 files, this will silently
+    // load the files that have already been loaded
+    char **ld = loaded;
+    for (; *ld != NULL && (ld-loaded) < LOADED_COUNT; ld++) {
+        if (!strcmp(*ld, filename)) {
+            printf("Not loading already loaded file '%s'\n", filename);
+            return;
+        }
+    }
     
     //printf("Located file for loading: '%s'\n", filename);
+
+    char *str = malloc(strlen(filename)+1);
+    strcpy(str, filename);
+
+    ld++;
+    // Just silently abort
+    if (ld-loaded < LOADED_COUNT)
+        *ld = filename;
+    else free(filename);
 
     eval_file(filename);
 }
@@ -1087,6 +1177,7 @@ char *parse() {
     for(;isspace(*pointer);++pointer) if (*pointer == '\n') {
         prev_line_begin = line_begin;
         line_begin = pointer;
+
         line++;
     }
     
@@ -1259,40 +1350,49 @@ Cell *execute_thing(Cell *cp) {
     return cp+1;
 }
 
-const char *reverse_search(Word*);
-void dodoes(Cell *c) {
-    Cell *word = (dicttop-1)->w.body;
+size_t bodylen(Cell *c) {
+    size_t sz = 0;
+    int last_lit = 0;
+    for (;last_lit||c->w->sw != return_w; c++) {
+        // This is needed to avoid nonexistent pointer dereference
+        if (last_lit) last_lit = 0;
+        if (c->w == lit_word) last_lit = 1;
+        sz += 1;
+    }
+    // Account for RETURN
+    return sz+1;
+}
 
-    if (dicttop->w.flags & FL_PREDEFINED) {
+// Note: we abandon 3-cell definition per does>
+// LIT <ptr> RETURN
+// TODO: use BRANCH instead of copying
+// + reserve space enough for adding BRANCH when CREATEing
+// Thus, we will not be abandoning definitions
+void dodoes(Cell *c) {
+    Cell *oldbdy = (dicttop-1)->w.body;
+
+    if ((dicttop-1)->w.flags & FL_PREDEFINED) {
         error("Cannot modify a predefined word with does>!\n"
               "Create a new word with CREATE <word> before using does>!\n");
         return;
     }
 
-    /* Pointer to the memory just after the word definition */
-    // The result: LIT <ptr> ... WORDEND <mem at ptr>
-    // LIT
-    word->w = lit_word;
-    word++;
+    (dicttop-1)->w.body = (Cell*)wspacend;
 
-    // <ptr>
-    Cell *ptr = word;
-    word++;
-    
+    Cell *body = (Cell*)wspacend;
+
+    // LIT 
+    body->w = lit_word;
+    body++;
+
+    // Pointer
+    *body = *(oldbdy+1);
+    body++;
+
     // Copy the rest
-    for (;c->w->sw != wordend_w; c++, word++) {
-        *word = *c;
-    }
+    memcpy(body, c, (bodylen(c))*sizeof(Cell));
 
-    word->w = wordend_word;
-    word++;
-    ptr->p = (void*)word;
-
-    if (wspacend > (char*)word) {
-        printf("Oops! We did a fucky-wucky! We've allocated something after CREATE and before DOES>!\n"
-               "And then we overwrote it with DOES>.");
-    }
-    wspacend = (char*)word;
+    wspacend = (char*)(body+bodylen(c));
 }
 
 void execute_raw(Cell *begin) {
@@ -1302,7 +1402,7 @@ void execute_raw(Cell *begin) {
             break;
         }
 
-        if (t->w->sw == wordend_w)
+        if (t->w->sw == return_w)
             break;
         
         if (t->w->sw == does_w) {
@@ -1488,7 +1588,7 @@ const char *reverse_search(Word *w) {
 void decompile(Cell *begin) {
     int last_lit = 0;
     
-    for (Cell *p = begin; last_lit || p->w->sw != wordend_w; p++) {
+    for (Cell *p = begin; last_lit || p->w->sw != return_w; p++) {
         const char *name = reverse_search(p->w);
         
         // TODO: add strlit support
@@ -1537,267 +1637,8 @@ void see_w() {
 }
 
 #ifdef FT_DOCS
-
-const char *doc_doc = 
-    "Reads the word name from source ahead.\n"
-    "Attempts to access the docstring of the word.\n"
-    "Displays the docstring; If none found, reports error.\n";
-
-const char *doc_lit = "A phony word for compiling numbers.\n";
-const char *doc_strlit = "A phony word for compiling strings.\n";
-const char *doc_wordend = "A phony word for finishing words.\n";
-
-const char *doc_exit = "(i -- )\nExit the program with code I.\n";
-
-const char *doc_findword =
-    "(-- word -- wordptr)\n"
-    "Reads WORD from source ahead.\n"
-    "Attempts to find the WORD in the dictionary, puts the WORDPTR onto stack.\n";    
-
-const char *doc_immediate =
-    "Marks the currently compiled word as IMMEDIATE.\n"
-    "IMMEDIATE are executed immediately upon being encountered.\n"
-    "Thus IMMEDIATE words are not compiled.\n"
-    "IMMEDIATE words allow for metaprogramming.\n"
-    "IF and ELSE are implemented as IMMEDIATE words.\n"
-    "IMMEDIATE words work similarly to macros.\n"
-    "Put it inside the body of the word like this:\n"
-    "\t: hi interpretation-only 10 ;\n";    
-
-const char *doc_interonly =
-    "Marks the currently compiled word as interpretation-only.\n"
-    "Works best with asssitant words like DOC.\n"
-    "Put it inside the body of the word like this:\n"
-    "\t: hi interpretation-only 10 ;\n";
-
-const char *doc_componly =
-    "Marks the currently compiled word as compile-only.\n"
-    "Works best with IMMEDIATE words.\n"
-    "Put it inside the body of the word like this:\n"
-    "\t: hi compile-only 10 ;\n";
-
-const char *doc_load =
-    "Reads the filehint from the source ahead.\n"
-    "Attempts to find the file in '.' and in INCLUDE_DIR (if defined).\n"
-    "If the name is provided in \"quotes\", then it will be taken as an absolute filepath.\n";
-
-const char *doc_branch =
-    "(addr -- )\n"
-    "Branch unconditionally to ADDR.\n"
-    "Cannot be used properly by user, used by IF ELSE etc.\n";
-
-const char *doc_zbranch =
-    "(cond addr --)\n"
-    "Branch to ADDR if cond == 0.\n"
-    "Cannot be used properly by user, used by IF ELSE etc.\n";
-
-const char *doc_colon =
-    "(-- wordname --)\n"
-    "Scans the name for the new word from source ahead.\n"
-    "Puts the system into compilation mode.\n"
-    "Use it like this:\n"
-    "\t: myword 1 2 3 4 ;\n";
-
-const char *doc_create =
-    "(-- wordname --)\n"
-    "Creates a new word with name WORDNAME with the following default body:\n"
-    "\tLIT <ptr> ENDWORD\n"
-    "\t      |-----------^\n"
-    "Used for CONSTANT and VARIABLE.\n"
-    "Use DOES> to replace the body of the newly created word.\n";
-
-const char *doc_does =
-    "(-- code ahead --)\n"
-    "Reads the until ; for the code ahead\n"
-    "Modifies the definition of the just CREATEd word to fit the following:\n"
-    "\tLIT <ptr> <code ahead> ENDWORD\n"
-    "\t      |------------------------^\n"
-    "Typical usage example:\n"
-    "\t: does>@ does> @ ;\n"
-    "\t: constant create does>@ , ;\n"
-    "Note: if you don't want the pointer to the memory right after the end of word, drop it:\n"
-    "... does> drop ... ;\n";
-
-const char *doc_semicolon =
-    "(--)\n"
-    "Finishes the declaration of a new word.\n"
-    "Puts the system into interpretation mode.\n";
-
-const char *doc_eb =
-    "(-- b -- b)\n"
-    "Stands for 'Expression Byte'.\n"
-    "Scans one byte from the source ahead; puts it onto stack.\n"
-    "Example:\n"
-    "\teb c . \\ prints 99\n";
-
-const char *doc_see =
-    "(-- word --)\n"
-    "Reads the word name from the source ahead.\n"
-    "Attempts to disassemble the word's contents.\n"
-    "Will not produce informative output with predefined words.\n";
-
-const char *doc_words =
-    "(--)\n"
-    "Displays the defined words and how full the dictionary is.\n";
-
-const char *doc_flags =
-    "(-- word --)\n"
-    "Reads the word name from the source ahead.\n"
-    "Displays flags assigned to the word.\n";
-
-const char *doc_swap =
-    "(a b -- b a)\n";
-
-const char *doc_rot =
-    "(a b c -- b c a)\n";
-
-const char *doc_pick =
-    "(AN ... A2 A1 N -- AN ... A2 A1 AN)\n";
-
-const char *doc_dup =
-    "(a -- a a)\n";
-
-const char *doc_drop =
-    "(a --)\n";
-
-const char *doc_dropall =
-    "(.. c b a --)\n";
-
-const char *doc_over =
-    "(a b -- a b a)\n";
-
-const char *doc_arith =
-    "All arithmetic operations (including = xor > etc.) work the same:\n"
-    "(a b -- a[OP]b), where OP -- the operation.\n";
-
-const char *doc_arithf =
-    "This is a float variant of an arithmetic opeeration.\n"
-    "All arithmetic operations (including = xor > etc.) work the same:\n"
-    "\t(a b -- a[OP]b), where OP -- the operation.\n";
-
-const char *doc_dot =
-    "(int -- )\n"
-    "Print an integer. Works like printf(\"%ld\", INT).\n";
-
-const char *doc_dotf = 
-    "(flt -- )\n"
-    "Print a float. Works like printf(\"%f\", FLT).\n";
-
-const char *doc_emit =
-    "(b -- )\n"
-    "Writes one byte to the standard output.\n";
-
-const char *doc_rmfile =
-    "(filename --)\n"
-    "Removes file 'FILENAME'.\n"
-    "Use FILE-EXISTS? to determine if file exists before removing.\n";
-
-const char *doc_open =
-    "(filename -- fd)\n"
-    "Opens file FILENAME, returns file descriptor FD.\n"
-    "Use FILE-EXISTS? to determine if file exists before opening.\n";
-
-const char *doc_close =
-    "(fd -- )\n"
-    "Closes file FD.\n";
-
-const char *doc_filex =
-    "(filename -- b)\n"
-    "Tests if FILENAME exists. Puts 1 on stack if yes, 0 otherwise.\n";
-
-const char *doc_rename =
-    "(oldfilename newfilename --)\n"
-    "Renames OLDFILENAME to NEWFILEname\n";
-
-const char *doc_touch =
-    "(filename --)\n"
-    "Creates a new empty file called FILENAME.\n";
-
-const char *doc_trunc =
-    "(fd size -- fd)\n"
-    "Changes size of file FD to SIZE; preserves FD.\n";
-
-const char *doc_fsize =
-    "(fd -- fd size)\n"
-    "Puts the size of the file FD onto stack; preserves FD.\n";
-
-const char *doc_write =
-    "(fd buf len -- fd)\n"
-    "Writes data from buffer BUF of size LEN to file FD; preserves FD.\n"
-    "Note: Use RESERVE to allocate a buffer, RESERVE with a negative value to deallocate it.\n"
-    "Tip: use FD=1 for writing to stdout, FD=3 for writing to stderr.\n";
-
-const char *doc_read =
-    "(fd buf len -- fd buf)\n"
-    "Reads data from FD to buffer BUF of size LEN; preserves FD and BUF.\n"
-    "Note: Use RESERVE to allocate a buffer, RESERVE with a negative value to deallocate it.\n"
-    "Tip: use FD=0 for reading from stdin.\n";
-
-const char *doc_seek =
-    "(fd offs -- fd)\n"
-    "Moves the position pointer of FD to OFFS; preserves FD\n";
-
-const char *doc_fetch =
-    "(addr -- value)\n"
-    "Reads a cell from memory pointed by ADDR.\n"
-    "Note: use @b to fetch a byte.\n";
-
-const char *doc_wr =
-    "(val addr -- )\n"
-    "Writes a cell with value VAL to memory pointed by ADDR.\n"
-    "Note: use !b to write a byte.\n";
-
-const char *doc_bfetch =
-    "(addr -- val)\n"
-    "Reads a byte from memory pointed by ADDR.\n"
-    "Note: use ! to write a cell.\n";
-
-const char *doc_bwr =
-    "(val addr -- )\n"
-    "Writes a byte with value VAL to memory pointed by ADDR.\n"
-    "Note: use @ to read a cell.\n";
-
-const char *doc_state =
-    "(-- addr)\n"
-    "Returns the addr of the byte that controls the system state.\n"
-    "Write 0 to change to interpretation mode, write 1 to change to compile mode.\n";
-
-const char *doc_cells =
-    "(n -- a)\n"
-    "Puts how many bytes N cells would occupy in memory onto stack.\n";
-
-const char *doc_here =
-    "(-- addr)\n"
-    "Puts the addr of the current end of the wordspace onto stack.\n"
-    "For clarifications about the FORTH memory model use `doc-mem`\n";
-
-const char *doc_base =
-    "(-- addr)\n"
-    "Puts the addr of the beginning of the wordspace onto stack.\n"
-    "For clarifications about the FORTH memory model use `doc-mem`\n";
-
-const char *doc_tip =
-    "(-- addr)\n"
-    "Puts the addr of the highest address of the wordspace onto stack.\n"
-    "For clarifications about the FORTH memory model use `doc-mem`\n";
-
-const char *doc_reserve =
-    "(n -- )\n"
-    "Reserves N bytes at the end of wordspace.\n"
-    "Use negative value to unreserve.\n"
-    "However, be careful when using RESERVE in compile mode because new words are \nwritten into the same memory space!\n"
-    "For clarifications about the FORTH memory model use `doc-mem`\n";
-
-const char *doc_docmem =
-    "(--)\n"
-    "Show clarifications about the FORTH memory model.\n";
-
-const char *doc_execute =
-    "(begin --)\n"
-    "Executes a set of instructions starting from BEGIN.\n"
-    "Use this if you want to execute an anonymous word.\n";
-
-#endif /* FT_DOCS */
+#include "docs.c"
+#endif
 
 // Dictionary initialization
 void init_dict() {
@@ -1807,8 +1648,8 @@ void init_dict() {
     lit_word = &(dicttop-1)->w;
     *dicttop++ = (DictEntry){"STRLIT", SYSWORD(strlit_w,FL_IMMEDIATE,doc_strlit)};
     strlit_word = &(dicttop-1)->w;
-    *dicttop++ = (DictEntry){"RETURN", SYSWORD(wordend_w,0,doc_wordend)};
-    wordend_word = &(dicttop-1)->w;
+    *dicttop++ = (DictEntry){"RETURN", SYSWORD(return_w,0,doc_return)};
+    return_word = &(dicttop-1)->w;
     *dicttop++ = (DictEntry){"BRANCH", SYSWORD(branch_w,FL_COMPONLY,doc_branch)};
     *dicttop++ = (DictEntry){"0BRANCH", SYSWORD(zbranch_w,FL_COMPONLY,doc_zbranch)};
     *dicttop++ = (DictEntry){"'", SYSWORD(findword_w,0,doc_findword)};
@@ -1822,6 +1663,7 @@ void init_dict() {
     *dicttop++ = (DictEntry){"COMPILE-ONLY", SYSWORD(compile_only_w,FL_IMMEDIATE|FL_COMPONLY,doc_componly)};
     *dicttop++ = (DictEntry){"LOAD", SYSWORD(load_w,FL_INTERONLY,doc_load)};
     *dicttop++ = (DictEntry){"DUMPSTACK", SYSWORD(dumpstack_w,0,"")};
+    *dicttop++ = (DictEntry){"SYSCALL", SYSWORD(syscall_w,0,"")};
     
 #ifdef FT_DOCS
     *dicttop++ = (DictEntry){"DOC", SYSWORD(doc_w,FL_INTERONLY,doc_doc)};
@@ -1852,8 +1694,8 @@ void init_dict() {
     *dicttop++ = (DictEntry){"OPEN", SYSWORD(open_w,0,doc_open)};
     *dicttop++ = (DictEntry){"TOUCH", SYSWORD(touch_w,0,doc_touch)};
     *dicttop++ = (DictEntry){"TRUNC", SYSWORD(trunc_w,0,doc_trunc)};
-    *dicttop++ = (DictEntry){"WRITE", SYSWORD(write_w,0,doc_write)};
-    *dicttop++ = (DictEntry){"READ", SYSWORD(read_w,0,doc_read)};
+    //*dicttop++ = (DictEntry){"WRITE", SYSWORD(write_w,0,doc_write)};
+    //*dicttop++ = (DictEntry){"READ", SYSWORD(read_w,0,doc_read)};
     *dicttop++ = (DictEntry){"SEEK", SYSWORD(seek_w,0,doc_seek)};
     *dicttop++ = (DictEntry){"FILESIZE", SYSWORD(filesize_w,0,doc_fsize)};
     *dicttop++ = (DictEntry){"CLOSE", SYSWORD(close_w,0,doc_close)};
@@ -1895,7 +1737,7 @@ void init_dict() {
     //crossplatformity of the system. But do we even care? That's the question.
     *dicttop++ = (DictEntry){".", SYSWORD(putint_w,0,doc_dot)};
     *dicttop++ = (DictEntry){".F", SYSWORD(putflt_w,0,doc_dotf)};
-    *dicttop++ = (DictEntry){"EMIT", SYSWORD(emit_w,0,doc_emit)};
+    //*dicttop++ = (DictEntry){"EMIT", SYSWORD(emit_w,0,doc_emit)};
 
 
     /* Logic */
@@ -2014,6 +1856,7 @@ void eval_file(const char *filename) {
     
     if (f == NULL) return;
 
+    /* Save previous state */
     int sline = line;
     char *splb = prev_line_begin, *slb = line_begin, *sp = pointer, *se = expression;
     
@@ -2023,6 +1866,7 @@ void eval_file(const char *filename) {
     eval();
 
     free(f);
+    /* Restore state */
     //prev_line_begin = line_begin = pointer = expression = NULL;
     line = sline, prev_line_begin = splb, line_begin = slb, pointer = sp, expression = se;
 }

@@ -1,3 +1,4 @@
+
 : bye 0 exit ;
 : abort 1 exit ;
 
@@ -70,56 +71,52 @@
 \ Execution of a variable: (-- addr)
 : variable create , ;
 
-\ Helper for CONSTANT
-: does>@ does> @ ;
-
 \ (val -- name --)
 \ Execution of a constant: (-- val)
-: constant create does>@ , ;
+: constant create , does> @ ;
 
 \ (size -- name --)
 \ Execution of a buffer: (-- addr)
 : buffer create reserve ;
 
 \ Types out a string
-: type while dup @b dup 0 != do emit 1 + done drop drop ;
+\ : type while dup @b dup 0 != do emit 1 + done drop drop ;
 
 \ Measures the length of the string
+( str -- len )
 : strlen 0 while swap dup @b do 1+ swap 1+ done drop ;
+
+\ Copies string to ADDR
+( str addr -- )
+: strcpy while swap dup @b do over over @b swap !b 1+ swap 1+ done drop drop ;
 
 \ ( FD STR -- )
 \ Writes a string to FD
-: writestr dup strlen write ;
+\ : writestr dup strlen write ;
 
 \ Idea: FFI
 \ dlopen libc.so
 \ 3 1 ffi socket socket dlerr? ...
 \ dlclose
 
-: cr 10 emit ;
+\ Idea: move I/O to stdlib
+\ + introduce syscall
+\ + define system-specific libraries
+\ + include the libraries based on the detected OS
 
-: space 32 ;
 
-: newline 10 ;
-
-\ These definitions assist OPEN
-: rdonly 0 1 ;
-: wronly 1 0 ;
-: rdwr 1 1 ;
 
 \ (fd b -- fd)
-: f! here swap ,b 1 write -1 reserve ;
+\ : f! here swap ,b 1 write -1 reserve ;
 \ Temporairly allocate a buffer of 1 byte,
 \ Read into it,
 \ Read the byte from the buffer onto stack,
 \ Unreserve the buffer
-: f@ here swap here 0 ,b 1 read swap @b -1 reserve ;
+\ : f@ here swap here 0 ,b 1 read swap @b -1 reserve ;
 
 : [eb] immediate compile-only eb ,, ;
 
-\ Memory usage and memory left utilities
-: memusage here base - . "B\n" type ;
-: memleft tip here - . "B\n" type ;
+
 
 \ TODO
 (

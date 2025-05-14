@@ -5,10 +5,10 @@ PWD=$(shell pwd)
 # E.g. .local
 PREFIX=$(PWD)
 CC=gcc
-DEBUGFLAGS=-fsanitize=address -g
+DEBUGFLAGS=-g #-fsanitize=address
 INCL_PATH=$(PREFIX)/include/
 BIN_PATH=$(PREFIX)/bin/
-CCFLAGS=-Wall -Wextra -Werror
+CCFLAGS=-Wall -Wextra -g
 LDFLAGS=#-lreadline
 # These are the optional features of the kernel.
 # Modify them to suit your needs.
