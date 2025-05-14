@@ -116,7 +116,18 @@
 
 : [eb] immediate compile-only eb ,, ;
 
+( x -- -x)
+: neg
+  0 swap -
+;
 
+\ realmod
+( x y -- x%%y )
+: %%
+ over 0 <
+ if % return endif
+ swap neg swap % neg
+;
 
 \ TODO
 (

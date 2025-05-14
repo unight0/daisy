@@ -202,7 +202,6 @@ void bye(int c) {
         free(p->name);
     }
     for (char **ld = loaded; *ld != NULL; ld++) {
-        printf("Freeing '%s'\n", *ld);
         free(*ld);
     }
     //wspacedealloc();
@@ -315,6 +314,8 @@ void bwr_w() {
 
     char *addr = stacktop--->p;
     char byte = (char)stacktop--->i;
+
+    //printf("%d --> %p\n", byte, (void*)addr);
 
     *addr = byte;
 }
@@ -1074,6 +1075,7 @@ void pick_w(void) {
 
 
 // Should word for all data types
+// NOTE: wtf is the comment above?
 void equ_w(void) {
     TWOOP(b, a, i, a.i == b.i);
 }
@@ -1740,7 +1742,7 @@ void init_dict() {
     //emit on top of that
     //NOTE: read() and write() are cool and all, but it will limit the
     //crossplatformity of the system. But do we even care? That's the question.
-    *dicttop++ = (DictEntry){".", SYSWORD(putint_w,0,doc_dot)};
+    //*dicttop++ = (DictEntry){".", SYSWORD(putint_w,0,doc_dot)};
     *dicttop++ = (DictEntry){".F", SYSWORD(putflt_w,0,doc_dotf)};
     //*dicttop++ = (DictEntry){"EMIT", SYSWORD(emit_w,0,doc_emit)};
 
