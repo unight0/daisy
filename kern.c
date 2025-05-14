@@ -104,6 +104,7 @@ char wordspace[WSBLOCK_SIZE] = {0}, *wspacend = wordspace;
 // Avoid word redifinition
 #define LOADED_COUNT 128
 char *loaded[LOADED_COUNT] = {NULL};
+size_t loaded_amount = 0;
 
 
 // For error display
@@ -567,14 +568,17 @@ void dumpstack_w() {
 void putint_w() {
     if (ASKSTACK(1)) return;
     printf("%ld", stacktop--->i);
+    fflush(stdout);
 }
 void putflt_w() {
     if(ASKSTACK(1)) return;
     printf("%f", stacktop--->f);
+    fflush(stdout);
 }
 void emit_w() {
     if(ASKSTACK(1)) return;
     putchar(stacktop--->i);
+    fflush(stdout);
 }
 
 // Ugly, but there's no other way
@@ -900,9 +904,9 @@ void load_w() {
 
     // Note: if you load more than 128 files, this will silently
     // load the files that have already been loaded
-    char **ld = loaded;
-    for (; *ld != NULL && (ld-loaded) < LOADED_COUNT; ld++) {
-        if (!strcmp(*ld, filename)) {
+    size_t ld;
+    for (ld = 0; ld < loaded_amount && ld < LOADED_COUNT; ld++) {
+        if (!strcmp(loaded[ld], filename)) {
             printf("Not loading already loaded file '%s'\n", filename);
             return;
         }
@@ -913,11 +917,12 @@ void load_w() {
     char *str = malloc(strlen(filename)+1);
     strcpy(str, filename);
 
-    ld++;
+    if (ld < LOADED_COUNT) {
+        loaded[ld] = str;
+        loaded_amount++;
+    }
     // Just silently abort
-    if (ld-loaded < LOADED_COUNT)
-        *ld = filename;
-    else free(filename);
+    else free(str);
 
     eval_file(filename);
 }
