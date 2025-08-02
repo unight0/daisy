@@ -25,15 +25,24 @@ load basis.fs
 \ : wronly 1 0 ;
 \ : rdwr 1 1 ;
 
+
 ( i -- str )
 \ I'm going to mark all 'local' variables by putting them in (...)
+\ NOTE: this is a shit implementation. There should be no globally available variables
 24 buffer (i2str-buf)
 0 variable (i2str-isneg)
 : i2str
+
   \ Negate the number and remember that it was negative
   0 (i2str-isneg) !
   dup 0 < if neg 1 (i2str-isneg) ! endif 
+
+  \ Finish c-str with '\0'
   0 (i2str-buf) 23 + !b
+
+  dup 0 = if drop '0' (i2str-buf) 22 + !!b return endif
+
+
   (i2str-buf) 22 + \ Begin from the right
   swap
   while dup 0 != do

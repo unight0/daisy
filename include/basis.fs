@@ -46,7 +46,7 @@
 
 ( This is a
   multiline comment
-  Note: multiline comments don't work in REPL.  )
+  Note: multiline comments don't work in REPL. )
 
 \ SUPER-MEGA-ACHTUNG!!
 \ { places HERE at the top of the stack, and } uses it!
@@ -79,9 +79,6 @@
 \ Execution of a buffer: (-- addr)
 : buffer create reserve ;
 
-\ Types out a string
-\ : type while dup @b dup 0 != do emit 1 + done drop drop ;
-
 \ Measures the length of the string
 ( str -- len )
 : strlen 0 while swap dup @b do 1+ swap 1+ done drop ;
@@ -89,10 +86,6 @@
 \ Copies string to ADDR
 ( str addr -- )
 : strcpy while swap dup @b do over over @b swap !b 1+ swap 1+ done drop drop ;
-
-\ ( FD STR -- )
-\ Writes a string to FD
-\ : writestr dup strlen write ;
 
 \ Idea: FFI
 \ dlopen libc.so
@@ -105,7 +98,6 @@
 \ + include the libraries based on the detected OS
 
 
-
 \ (fd b -- fd)
 \ : f! here swap ,b 1 write -1 reserve ;
 \ Temporairly allocate a buffer of 1 byte,
@@ -113,13 +105,10 @@
 \ Read the byte from the buffer onto stack,
 \ Unreserve the buffer
 \ : f@ here swap here 0 ,b 1 read swap @b -1 reserve ;
-
 : [eb] immediate compile-only eb ,, ;
 
 ( x -- -x)
-: neg
-  0 swap -
-;
+: neg 0 swap - ;
 
 \ realmod
 ( x y -- x%%y )
@@ -136,3 +125,15 @@
 %i
 %f
 )
+\ Idea: one 'universal' function for stdout
+\ OUT
+\ ( aN ... a2 a1 str --)
+\ Format:
+\ %u -- unsigned
+\ %i -- signed
+\ %f -- floating
+\ %s -- string
+\ %Xa -- precision, where a=u|i|f
+\ %! -- interpret last argument as a buffer to write to
+\ %$ -- interpret last argument as a file descriptor to write to
+

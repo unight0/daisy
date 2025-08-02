@@ -9,11 +9,42 @@
 #include <sys/stat.h>
 #include <errno.h>
 
+
+/*
+ * A pressing issue.
+ * How abstract do we want to be?
+ * More precisely, do we provide I/O natively or through stdlib?
+ * Why stdlib:
+ * - Less words in the kernel
+ * - Thus, smaller source + binary size
+ * - Modularity
+ * - ..?
+ * Why natively:
+ * - Less stdlib to load(!) during runtime
+ * - Thus possibly better performance
+ * - We're already reading text files at runtime,
+ *   so I/O is expected. Why not give access to it
+ *   to the operator?
+ *
+ * Another issue.
+ * Documentation: embedded or separate file?
+ * Why embedded:
+ * - On-spot docs
+ * - Hard to loose -- always in the kernel
+ * Why separate file:
+ * - All in one place, easy to view as a whole
+ * - Less source code in kernel
+ * - Smaller kernel binary size
+ * - Good-ol' plain text file with info :)
+ * */
+
+
 typedef void (*SysWord)(void);
 typedef struct Word Word;
 typedef intptr_t isize_t;
 typedef uintptr_t usize_t;
 
+// NOTE: questionable portability
 typedef
 #if INTPTR_MAX == INT64_MAX
 double
