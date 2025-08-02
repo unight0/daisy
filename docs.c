@@ -4,6 +4,7 @@ const char *doc_doc =
     "Attempts to access the docstring of the word.\n"
     "Displays the docstring; If none found, reports error.\n";
 
+
 const char *doc_lit = "A phony word for compiling numbers.\n";
 const char *doc_strlit = "A phony word for compiling strings.\n";
 const char *doc_return = "A phony word for finishing words.\n";

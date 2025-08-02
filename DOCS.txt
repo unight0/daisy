@@ -1,0 +1,314 @@
+---------------------------------------------------------
+DOC  
+    Reads the word name from source ahead.
+    Attempts to access the docstring of the word.
+    Displays the docstring; If none found, reports error.
+---------------------------------------------------------
+LIT
+    A phony word for compiling numbers.
+---------------------------------------------------------
+STRLIT
+    A phony word for compiling strings.
+---------------------------------------------------------
+RETURN
+    A phony word for finishing words.
+---------------------------------------------------------
+EXIT
+    (i -- )
+    Exit the program with code I.
+---------------------------------------------------------
+FINDWORD 
+    (-- word -- wordptr)
+    Reads WORD from source ahead.
+    Attempts to find the WORD in the dictionary,
+    puts the WORDPTR onto stack.    
+---------------------------------------------------------
+IMMEDIATE 
+    Marks the currently compiled word as IMMEDIATE.
+    IMMEDIATE are executed immediately upon
+    being encountered.
+    Thus IMMEDIATE words are not compiled.
+    IMMEDIATE words allow for metaprogramming.
+    IF and ELSE are implemented as IMMEDIATE words.
+    IMMEDIATE words work similarly to macros.
+    Put it inside the body of the word like this:
+        : hi interpretation-only 10 ; 
+---------------------------------------------------------
+INTERONLY 
+    Marks the currently compiled word as
+    interpretation-only.
+    Works best with asssitant words like DOC.
+    Put it inside the body of the word like this:
+        : hi interpretation-only 10 ;
+---------------------------------------------------------
+COMPONLY 
+    Marks the currently compiled word as compile-only.
+    Works best with IMMEDIATE words.
+    Put it inside the body of the word like this:
+        : hi compile-only 10 ;
+---------------------------------------------------------
+LOAD 
+    Reads the filehint from the source ahead.
+    Attempts to find the file in '.' and in
+    INCLUDE_DIR (if defined).
+    If the name is provided in "quotes",
+    then it will be taken as an absolute filepath.
+---------------------------------------------------------
+BRANCH 
+    (addr -- )
+    Branch unconditionally to ADDR.
+    Cannot be used properly by user, used by IF ELSE etc.
+---------------------------------------------------------
+0BRANCH 
+    (cond addr --)
+    Branch to ADDR if cond  0.
+    Cannot be used properly by user, used by IF ELSE etc.
+---------------------------------------------------------
+COLON 
+    (-- wordname --)
+    Scans the name for the new word from source ahead.
+    Puts the system into compilation mode.
+    Use it like this:
+        : myword 1 2 3 4 ;
+---------------------------------------------------------
+CREATE 
+    (-- wordname --)
+    Creates a new word with name WORDNAME with the
+    following default body:
+        LIT <ptr> RETURN
+              |----------^
+    Used for CONSTANT and VARIABLE.
+    Use DOES> to replace the body of the newly
+    created word.
+---------------------------------------------------------
+DOES 
+    (-- code ahead --)
+    Reads the until ; for the code ahead
+    Modifies the definition of the just CREATEd word
+    to fit the following:
+         <...> LIT <ptr> <code ahead> RETURN
+         ^-----------|
+    Why does the pointer point to some
+    memory *behind* the word?
+    Well, it points to the end of the
+    previous word definition.
+    Full memory layout looks more like this:
+        LIT <ptr> RETURN <...> LIT <ptr> <code ahead> RETURN
+              |------------^---------|
+    This previous definition is abandoned.
+    This 'leaks' some memory, but an acceptable amount.
+    The size of this memory block is 0 by default, but you
+    can increase its size by using RESERVE.
+    Typical usage example:
+        : constant create , does> @
+    Note: if you don't want the pointer to the
+    memory block, drop it:
+        ... does> drop ... ;
+---------------------------------------------------------
+SEMICOLON [;]
+    (--)
+    Finishes the declaration of a new word.
+    Puts the system into interpretation mode.
+---------------------------------------------------------
+EB 
+    (-- b -- b)
+    Stands for 'Expression Byte'.
+    Scans one byte from the source ahead; puts it
+    onto stack.
+    Example:
+        eb c . \\ prints 99
+---------------------------------------------------------
+SEE 
+    (-- word --)
+    Reads the word name from the source ahead.
+    Attempts to disassemble the word's contents.
+    Will not produce informative output with
+    predefined words.
+---------------------------------------------------------
+WORDS 
+    (--)
+    Displays the defined words and how full the
+    dictionary is.
+---------------------------------------------------------
+FLAGS 
+    (-- word --)
+    Reads the word name from the source ahead.
+    Displays flags assigned to the word.
+---------------------------------------------------------
+SWAP 
+    (a b -- b a)
+---------------------------------------------------------
+ROT 
+    (a b c -- b c a)
+---------------------------------------------------------
+PICK 
+    (AN ... A2 A1 N -- AN ... A2 A1 AN)
+---------------------------------------------------------
+DUP 
+    (a -- a a)
+---------------------------------------------------------
+DROP 
+    (a --)
+---------------------------------------------------------
+DROPALL 
+    (.. c b a --)
+---------------------------------------------------------
+OVER 
+    (a b -- a b a)
+---------------------------------------------------------
+ARITH [+ - * /]
+    All arithmetic operations (including  xor > etc.)
+    work the same:
+    (a b -- a[OP]b), where OP -- the operation.
+---------------------------------------------------------
+ARITHF [+f -f *f /f]
+    This is a float variant of an arithmetic opeeration.
+    All arithmetic operations (including  xor > etc.)
+    work the same:
+        (a b -- a[OP]b), where OP -- the operation.
+---------------------------------------------------------
+DOT [.]
+    (int -- )
+    Print an integer. Works like printf(\%ld\, INT).
+---------------------------------------------------------
+DOTF [.F] 
+    (flt -- )
+    Print a float. Works like printf(\%f\, FLT).
+---------------------------------------------------------
+EMIT 
+    (b -- )
+    Writes one byte to the standard output.
+---------------------------------------------------------
+RMFILE 
+    (filename --)
+    Removes file 'FILENAME'.
+    Use FILE-EXISTS? to determine if file exists
+    before removing.
+---------------------------------------------------------
+OPEN 
+    (filename -- fd)
+    Opens file FILENAME, returns file descriptor FD.
+    Use FILE-EXISTS? to determine if file exists
+    before opening.
+---------------------------------------------------------
+CLOSE 
+    (fd -- )
+    Closes file FD.
+---------------------------------------------------------
+FILE-EXISTS?
+    (filename -- b)
+    Tests if FILENAME exists. Puts 1 on stack if yes,
+    0 otherwise.
+---------------------------------------------------------
+RENAME 
+    (oldfilename newfilename --)
+    Renames OLDFILENAME to NEWFILEname
+---------------------------------------------------------
+TOUCH 
+    (filename --)
+    Creates a new empty file called FILENAME.
+---------------------------------------------------------
+TRUNC 
+    (fd size -- fd)
+    Changes size of file FD to SIZE; preserves FD.
+---------------------------------------------------------
+FSIZE 
+    (fd -- fd size)
+    Puts the size of the file FD onto stack;
+    preserves FD.
+---------------------------------------------------------
+WRITE 
+    (fd buf len -- fd)
+    Writes data from buffer BUF of size LEN to file FD;
+    preserves FD.
+    Note: Use RESERVE to allocate a buffer,
+    RESERVE with a negative value to deallocate it.
+    Tip: use FD1 for writing to stdout, FD3 for
+    writing to stderr.
+---------------------------------------------------------
+READ 
+    (fd buf len -- fd buf)
+    Reads data from FD to buffer BUF of size LEN;
+    preserves FD and BUF.
+    Note: Use RESERVE to allocate a buffer,
+    RESERVE with a negative value to deallocate it.
+    Tip: use FD=0 for reading from stdin.
+---------------------------------------------------------
+SEEK 
+    (fd offs -- fd)
+    Moves the position pointer of FD to OFFS;
+    preserves FD
+---------------------------------------------------------
+@
+    (addr -- value)
+    Reads a cell from memory pointed by ADDR.
+    Note: use @b to fetch a byte.
+---------------------------------------------------------
+! 
+    (val addr -- )
+    Writes a cell with value VAL to memory pointed
+    by ADDR.
+    Note: use !b to write a byte.
+---------------------------------------------------------
+@b 
+    (addr -- val)
+    Reads a byte from memory pointed by ADDR.
+    Note: use ! to write a cell.
+---------------------------------------------------------
+!b 
+    (val addr -- )
+    Writes a byte with value VAL to memory pointed
+    by ADDR.
+    Note: use @ to read a cell.
+---------------------------------------------------------
+STATE 
+    (-- addr)
+    Returns the addr of the byte that controls
+    the system state.
+    Write 0 to change to interpretation mode, write 1
+    to change to compile mode.
+---------------------------------------------------------
+CELLS 
+    (n -- a)
+    Puts how many bytes N cells would occupy in memory
+    onto stack.
+---------------------------------------------------------
+HERE 
+    (-- addr)
+    Puts the addr of the current end of the wordspace
+    onto stack.
+    For clarifications about the FORTH memory model 
+    use `doc-mem`
+---------------------------------------------------------
+BASE 
+    (-- addr)
+    Puts the addr of the beginning of the wordspace
+    onto stack.
+    For clarifications about the FORTH memory model 
+    use `doc-mem`
+---------------------------------------------------------
+TIP 
+    (-- addr)
+    Puts the addr of the highest address of the wordspace
+    onto stack.
+    For clarifications about the FORTH memory model
+    use `doc-mem`
+---------------------------------------------------------
+RESERVE 
+    (n -- )
+    Reserves N bytes at the end of wordspace.
+    Use negative value to unreserve.
+    However, be careful when using RESERVE in compile
+    mode because new words are written into the same
+    memory space!
+    For clarifications about the FORTH memory model
+    use `doc-mem`
+---------------------------------------------------------
+DOCMEM 
+    (--)
+    Show clarifications about the FORTH memory model.
+---------------------------------------------------------
+EXECUTE 
+    (begin --)
+    Executes a set of instructions starting from BEGIN.
+    Use this if you want to execute an anonymous word.

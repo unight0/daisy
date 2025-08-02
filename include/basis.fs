@@ -65,7 +65,7 @@
 \ Additionally, when (or IF) we implement a multithreading model,
 \ It will be designed in such a way that this wouldn't be an issue.
 \ (here --)
-: } compile-only immediate 0 state !b ['] wordend , here over swap - reserve execute ;
+: } compile-only immediate 0 state !b ['] return , here over swap - reserve execute ;
 
 \ (val -- name --)
 \ Execution of a variable: (-- addr)
